@@ -1,7 +1,8 @@
 with Ada.Streams;
 with Interfaces;
+use  Interfaces;
 
--- API Rationale TODO CSTAT UPDATE THE IMPLEMENTATION TO REFLECT THIS NEW THINKING!
+-- API Rationale
 --
 -- Num_Consumed: Specifies how many of the input bytes have been processed.
 --               Next `Update` invocation is expected to present the input
@@ -29,21 +30,21 @@ with Interfaces;
 -- processed, a new Context needs to be initialized after Final has returned
 -- true. (More input data provided will not be consumed, and Num_Consumed will
 -- then be 0 all the time for this old context).
+
 package LZ4Ada is
 
 	pragma Assertion_Policy(Pre => Check, Post => Check);
 
-	Checksum_Error: exception;
-
-	type U8     is mod 2**8;
-	type U32    is mod 2**32;
+	subtype U8  is Interfaces.Unsigned_8;
+	subtype U32 is Interfaces.Unsigned_32;
 	type Octets is array (Integer range <>) of U8;
+
+	Checksum_Error:  exception;
+	Data_Corruption: exception;
+	Not_Supported:   exception;
 
 	type Decompressor(Size_Last: Integer) is tagged limited private;
 
-	Empty: constant Octets(1 .. 0) := (others => 0);
-
-	-- Decompressor
 	function Init(Input: in Octets; Num_Consumed: out Integer)
 				return Decompressor
 				with Pre => Input'Length >= 7;
@@ -67,10 +68,72 @@ package LZ4Ada is
 			with Pre => Output'Length >=
 					Ctx.Get_Minimum_Output_Buffer_Size;
 
-	-- TODO z CURRENTLY ONLY EXPORTED FOR USE IN xxhash
-	function Shift_Right(Value: in U32; Amount: in Natural) return U32 is
-		(U32(Interfaces.Shift_Right(Interfaces.Unsigned_32(Value),
-		Amount)));
+	-- XXHash32 Implementation based on the following C++ implementation:
+	-- https://github.com/stbrumme/xxhash/blob/master/xxhash32.h
+	-- +--------------------------------------------------------------------
+	-- | THIS IS AN ALTERED SOURCE VERSION                                 |
+	-- +--------------------------------------------------------------------
+	-- The C++ implementation has the following details:
+	-- +-------------------------------------------------------------------+
+	-- | xxhash32.h                                                        |
+	-- | Copyright (c) 2016 Stephan Brumme. All rights reserved.           |
+	-- | see http://create.stephan-brumme.com/disclaimer.html              |
+	-- |                                                                   |
+	-- | Unless otherwise noted, all source code published on              |
+	-- | http://create.stephan-brumme.com and its sub-pages is licensed    |
+	-- | similar to the zlib license:                                      |
+	-- |                                                                   |
+	-- | This software is provided 'as-is', without any express or implied |
+	-- | warranty. In no event will the author be held liable for any      |
+	-- damages arising from the use of this software.                      |
+	-- |                                                                   |
+	-- | Permission is granted to anyone to use this software for any      |
+	-- | purpose, including commercial applications, and to alter it and   |
+	-- | redistribute it freely, subject to the following restrictions:    |
+	-- |                                                                   |
+	-- | * The origin of this software must not be misrepresented; you     |
+	-- |   must not claim that you wrote the original software.            |
+	-- | * If you use this software in a product, an acknowledgment in the |
+	-- |   product documentation would be appreciated but is not required. |
+	-- | * Altered source versions must be plainly marked as such, and     |
+	-- |   must not be misrepresented as being the original software.      |
+	-- |                                                                   |
+	-- | If you like / hate / ignore my software, send me an email or,     |
+	-- | even better, a nice postcard. Thank you ! ☺                       |
+	-- +-------------------------------------------------------------------+
+	package XXHash32 is
+		type Hasher is tagged limited private;
+		function  Init return Hasher;
+		function  Init(Seed: in U32) return Hasher;
+		procedure Update(Ctx: in out Hasher; Input: in Octets);
+		function  Final(Ctx: in Hasher) return U32;
+		function  Hash(Input: in Octets) return U32; -- One-Stop Call
+	private
+		Prime_1: constant U32 := 2654435761;
+		Prime_2: constant U32 := 2246822519;
+		Prime_3: constant U32 := 3266489917;
+		Prime_4: constant U32 :=  668265263;
+		Prime_5: constant U32 :=  374761393;
+		Max_Buffer_Size: constant Integer := 16;
+
+		subtype U64 is Interfaces.Unsigned_64;
+		procedure Process(Ctx: in out Hasher; Data: in Octets)
+						with Pre => Data'Length = 16;
+
+		type Hasher is tagged limited record
+			-- No need to do an array if we always access by
+			-- constant index. Allow the compiler to optimize here.
+			State_0:      U32;
+			State_1:      U32;
+			State_2:      U32;
+			State_3:      U32;
+			Buffer:       Octets(0 .. Max_Buffer_Size - 1);
+			Buffer_Size:  Integer;
+			Total_Length: U64;
+		end record;
+
+		function Init return Hasher is (Init(0));
+	end XXHash32;
 
 private
 
@@ -123,16 +186,14 @@ private
 		Is_Compressed:           Boolean; -- current block compressed YN
 		History:                 Octets(0 .. History_Size - 1);
 		History_Pos:             Integer;
+		Hash_All_Data:           LZ4Ada.XXHash32.Hasher;
 	end record;
 
 	function Get_Minimum_Output_Buffer_Size(Ctx: in Decompressor)
-				return Integer is (Ctx.Input_Buffer'Length);
-	function Shift_Right(Value: in U8; Amount: in Natural) return U8 is
-		(U8(Interfaces.Shift_Right(Interfaces.Unsigned_8(Value),
-		Amount))) with Pre => Amount <= 7;
-	function Shift_Left(Value: in U32; Amount: in Natural) return U32 is
-		(U32(Interfaces.Shift_Left(Interfaces.Unsigned_32(Value),
-		Amount)));
+				return Integer is (Ctx.Input_Buffer'Length -
+				Block_Size_Bytes - Ctx.Block_Checksum_Length);
+
+	-- TODO z might want to make this more efficient?
 	function Load_32(Src: in Octets) return U32
 				is (U32(Src(Src'First)) or
 				Shift_Left(U32(Src(Src'First + 1)), 8) or
