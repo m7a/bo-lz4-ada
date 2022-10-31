@@ -1,5 +1,5 @@
--- TODO LEGACY FORMAT SUPPORT
--- TODO LENGTH HANDLING TO MAKE USE OF CONTENT LENGTH DECLARATIONS
+with Ada.Assertions;
+
 -- TODO SKIPPABLE BLOCKS SUPPORT
 
 package body LZ4Ada is
@@ -30,9 +30,10 @@ package body LZ4Ada is
 
 	-- Octets based functions --
 
+	-- TODO z THIS FUNCTION IS TOO LARGE
 	function Init(Input: in Octets; Num_Consumed: out Integer)
 							return Decompressor is
-		Magic_NB:              constant U32 := Load_32(Input(Input'First
+		Magic_NB: constant U32 := Load_32(Input(Input'First
 							.. Input'First + 3));
 		FLG:                   constant U8 := Input(Input'First + 4);
 		BD:                    constant U8 := Input(Input'First + 5);
@@ -43,71 +44,81 @@ package body LZ4Ada is
 		FLG_Dictionary_ID:     constant Boolean := ((FLG and  1) /= 0);
 		FLG_Version:           constant U8      := Shift_Right(FLG and
 								16#c0#, 6);
-		Block_Checksum_Size:   constant Integer :=
-					(if FLG_Block_Checksum   then 4 else 0);
-		Content_Checksum_Size: constant Integer :=
-					(if FLG_Content_Checksum then 4 else 0);
-
 		BD_Block_Max_Size: constant U8 := Shift_Right(BD and 16#70#, 4);
 		BD_Has_Reserved:   constant Boolean := ((BD and 16#8f#) /= 0);
 
-		Cursor:          Integer := Input'First + 6;
+		Block_Checksum_Size:   Integer :=
+					(if FLG_Block_Checksum   then 4 else 0);
+		Content_Checksum_Size: Integer :=
+					(if FLG_Content_Checksum then 4 else 0);
+		Cursor:                Integer := Input'First + 6;
+
+		Declared_Format: Format;
 		Block_Max_Size:  Integer;
-		Detected_Format: Format;
 		HC:              U8; -- header checksum byte
 		Computed_HC:     U8;
 	begin
 		case Magic_NB is
-		when 16#184d2204# => Detected_Format := Modern;
-		-- TODO EFFECTIVELY UNSUPPORTED AT THE MOMENT!
-		--when 16#184c2102# => Detected_Format := Legacy;
-		when others       => raise Not_Supported with
+		when Magic_Modern =>
+			Declared_Format := Modern;
+			if FLG_Version /= 1 then
+				raise Not_Supported with
+					"Only LZ4 frame format version 01 " &
+					"supported. Detected " &
+					U8'Image(FLG_Version) & " instead.";
+			end if;
+			if FLG_Reserved or BD_Has_Reserved then
+				raise Not_Supported with
+					"Found reserved bits /= 0. Data " &
+					"might be too new to be processed " &
+					"by this implementation!";
+			end if;
+			case BD_Block_Max_Size is
+			when 4 => Block_Max_Size :=       64 * 1024; -- 64 KiB
+			when 5 => Block_Max_Size :=      256 * 1024; -- 256 KiB
+			when 6 => Block_Max_Size :=     1024 * 1024; -- 1 MiB
+			when 7 => Block_Max_Size := 4 * 1024 * 1024; -- 4 MiB
+			when others => raise Not_Supported with
+					"Unknown maximum block size flag: " &
+					U8'Image(BD_Block_Max_Size);
+			end case;
+
+			-- TODO MAKE USE OF THIS NUMBER
+			-- skip over content size
+			if FLG_Content_Size then
+				Cursor := Cursor + 8;
+			end if;
+
+			-- skip over dictionary ID
+			if FLG_Dictionary_ID then
+				Cursor := Cursor + 4;
+			end if;
+
+			HC := Input(Cursor);
+			Computed_HC := Shift_Right(U8(LZ4Ada.XXHash32.Hash(
+					Input(Input'First .. Cursor - 1))
+					and 16#ff#), 8);
+			if HC /= Computed_HC then
+				raise Checksum_Error with
+					"Computed Header Checksum " &
+					U8'Image(Computed_HC) &
+					" does not match expected Header " &
+					"Checksum " & U8'Image(HC);
+			end if;
+			Num_Consumed := Cursor - Input'First + 1;
+		when Magic_Legacy =>
+			Declared_Format       := Legacy;
+			Block_Max_Size        := 8 * 1024 * 1024;
+			Block_Checksum_Size   := 0;
+			Content_Checksum_Size := 0;
+			Num_Consumed          := 4;
+		when others =>
+			raise Not_Supported with
 					"Invalid or unsupported magic: " &
 					U32'Image(Magic_NB);
 		end case;
-		if FLG_Version /= 1 then
-			raise Not_Supported with
-				"Only LZ4 frame format version 01 supported. " &
-				"Detected " & U8'Image(FLG_Version) &
-				" instead.";
-		end if;
-		if FLG_Reserved or BD_Has_Reserved then
-			raise Not_Supported with
-				"Found reserved bits /= 0. Data might be too " &
-				"new to be processed by this implementation!";
-		end if;
-		case BD_Block_Max_Size is
-		when 4 => Block_Max_Size :=       64 * 1024; -- 64 KiB
-		when 5 => Block_Max_Size :=      256 * 1024; -- 256 KiB
-		when 6 => Block_Max_Size :=     1024 * 1024; -- 1 MiB
-		when 7 => Block_Max_Size := 4 * 1024 * 1024; -- 4 MiB
-		-- TODO LEGACY FORMAT HAS 8MIB
-		when others => raise Not_Supported with
-					"Unknown maximum block size flag: " &
-					U8'Image(BD_Block_Max_Size);
-		end case;
-
-		-- skip over content size
-		if FLG_Content_Size then
-			Cursor := Cursor + 8;
-		end if;
-
-		-- skip over dictionary ID
-		if FLG_Dictionary_ID then
-			Cursor := Cursor + 4;
-		end if;
-
-		HC := Input(Cursor);
-		Computed_HC := Shift_Right(U8(LZ4Ada.XXHash32.Hash(
-			Input(Input'First .. Cursor - 1)) and 16#ff#), 8);
-		if HC /= Computed_HC then
-			raise Checksum_Error with "Computed Header Checksum " &
-				U8'Image(Computed_HC) & " does not match " &
-				"expected Header Checksum " & U8'Image(HC);
-		end if;
-		Num_Consumed := Cursor - Input'First + 1;
 		return (
-			Is_Format               => Detected_Format,
+			Is_Format               => Declared_Format,
 			-- Per spec, the declared size excludes block size +
 			-- optional checksum fields. Hence add their sizes here!
 			Size_Last               => Block_Max_Size +
@@ -119,7 +130,7 @@ package body LZ4Ada is
 			Input_Buffer            => (others => 0),
 			Input_Buffer_Filled     => 0,
 			Input_Length            => -1,
-			Is_Compressed           => (Detected_Format = Legacy),
+			Is_Compressed           => (Declared_Format = Legacy),
 			History                 => (others => 0),
 			History_Pos             => 0,
 			Hash_All_Data           => LZ4Ada.XXHash32.Init
@@ -221,6 +232,18 @@ package body LZ4Ada is
 			if Ctx.Is_Format = Modern and Length_Word = 0 then
 				Ctx.Is_At_End_Mark      := True;
 				Ctx.Input_Buffer_Filled := 0;
+				return;
+			elsif Ctx.Is_Format = Legacy and
+						Length_Word = Magic_Legacy then
+				Ctx.Is_At_End_Mark      := True;
+				-- may not strictly be necessary:
+				Ctx.Input_Buffer_Filled := 4;
+				Ctx.Input_Buffer(0 .. Block_Size_Bytes - 1)
+							:= (others => 0);
+				Ada.Assertions.Assert(Num_Consumed >=
+							Block_Size_Bytes);
+				-- unconsume this part from the next frame!
+				Num_Consumed := Num_Consumed - Block_Size_Bytes;
 				return;
 			end if;
 			if Ctx.Is_Format = Modern then

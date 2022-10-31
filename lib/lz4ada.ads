@@ -137,6 +137,9 @@ package LZ4Ada is
 
 private
 
+	Magic_Modern: constant U32 := 16#184d2204#;
+	Magic_Legacy: constant U32 := 16#184c2102#;
+
 	History_Size:     constant Integer := 64 * 1024;
 	Block_Size_Bytes: constant Integer := 4;
 
