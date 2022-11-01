@@ -1,7 +1,5 @@
 with Ada.Assertions;
 
--- TODO SKIPPABLE BLOCKS SUPPORT
-
 package body LZ4Ada is
 
 	-- Stream_Element_Array based functions --
@@ -30,9 +28,11 @@ package body LZ4Ada is
 
 	-- Octets based functions --
 
-	-- TODO z THIS FUNCTION IS TOO LARGE
 	function Init(Input: in Octets; Num_Consumed: out Integer)
 							return Decompressor is
+		function "*"(Flag: in Boolean; Num: in Integer)
+				return Integer is (if Flag then Num else 0);
+
 		Magic_NB: constant U32 := Load_32(Input(Input'First
 							.. Input'First + 3));
 		FLG:                   constant U8 := Input(Input'First + 4);
@@ -47,71 +47,49 @@ package body LZ4Ada is
 		BD_Block_Max_Size: constant U8 := Shift_Right(BD and 16#70#, 4);
 		BD_Has_Reserved:   constant Boolean := ((BD and 16#8f#) /= 0);
 
-		Block_Checksum_Size:   Integer :=
-					(if FLG_Block_Checksum   then 4 else 0);
-		Content_Checksum_Size: Integer :=
-					(if FLG_Content_Checksum then 4 else 0);
+		Block_Checksum_Size:   Integer := FLG_Block_Checksum   * 4;
+		Content_Checksum_Size: Integer := FLG_Content_Checksum * 4;
 		Cursor:                Integer := Input'First + 6;
+		Content_Size:          U64     := 0;
 
 		Declared_Format: Format;
 		Block_Max_Size:  Integer;
-		HC:              U8; -- header checksum byte
-		Computed_HC:     U8;
 	begin
 		case Magic_NB is
 		when Magic_Modern =>
 			Declared_Format := Modern;
-			if FLG_Version /= 1 then
-				raise Not_Supported with
-					"Only LZ4 frame format version 01 " &
-					"supported. Detected " &
-					U8'Image(FLG_Version) & " instead.";
-			end if;
-			if FLG_Reserved or BD_Has_Reserved then
-				raise Not_Supported with
-					"Found reserved bits /= 0. Data " &
-					"might be too new to be processed " &
-					"by this implementation!";
-			end if;
-			case BD_Block_Max_Size is
-			when 4 => Block_Max_Size :=       64 * 1024; -- 64 KiB
-			when 5 => Block_Max_Size :=      256 * 1024; -- 256 KiB
-			when 6 => Block_Max_Size :=     1024 * 1024; -- 1 MiB
-			when 7 => Block_Max_Size := 4 * 1024 * 1024; -- 4 MiB
-			when others => raise Not_Supported with
-					"Unknown maximum block size flag: " &
-					U8'Image(BD_Block_Max_Size);
-			end case;
+			Check_Flag_Validity(FLG_Version, FLG_Reserved or
+							BD_Has_Reserved);
+			Block_Max_Size := Block_Size_Table(BD_Block_Max_Size);
 
-			-- TODO MAKE USE OF THIS NUMBER
-			-- skip over content size
+			-- record content size if available
 			if FLG_Content_Size then
+				Content_Size := Load_64(Input(Cursor ..
+								Cursor + 7));
 				Cursor := Cursor + 8;
 			end if;
 
 			-- skip over dictionary ID
-			if FLG_Dictionary_ID then
-				Cursor := Cursor + 4;
-			end if;
+			Cursor := Cursor + FLG_Dictionary_ID * 4;
 
-			HC := Input(Cursor);
-			Computed_HC := Shift_Right(U8(LZ4Ada.XXHash32.Hash(
-					Input(Input'First .. Cursor - 1))
-					and 16#ff#), 8);
-			if HC /= Computed_HC then
-				raise Checksum_Error with
-					"Computed Header Checksum " &
-					U8'Image(Computed_HC) &
-					" does not match expected Header " &
-					"Checksum " & U8'Image(HC);
-			end if;
+			Check_Header_Checksum(Input(Input'First .. Cursor - 1),
+						Input(Cursor));
 			Num_Consumed := Cursor - Input'First + 1;
 		when Magic_Legacy =>
-			Declared_Format       := Legacy;
-			Block_Max_Size        := 8 * 1024 * 1024;
-			Block_Checksum_Size   := 0;
-			Content_Checksum_Size := 0;
-			Num_Consumed          := 4;
+			Declared_Format        := Legacy;
+			Block_Max_Size         := 8 * 1024 * 1024;
+			Block_Checksum_Size    := 0;
+			Content_Checksum_Size  := 0;
+			Num_Consumed           := 4;
+		when 16#184d2a50# .. 16#184d2a5f# =>
+			Declared_Format        := Skippable;
+			Block_Max_Size         := 0;
+			Block_Checksum_Size    := 0;
+			Content_Checksum_Size  := 0;
+			Num_Consumed           := 8;
+			Content_Size           := U64(Load_32(
+							Input(Input'First + 4 ..
+							Input'First + 7)));
 		when others =>
 			raise Not_Supported with
 					"Invalid or unsupported magic: " &
@@ -130,12 +108,66 @@ package body LZ4Ada is
 			Input_Buffer            => (others => 0),
 			Input_Buffer_Filled     => 0,
 			Input_Length            => -1,
+			-- No need to set this for skippable, since it is always
+			-- assumed that Content_Size_Remaining contains a value
+			-- for Skippable frames
+			Has_Content_Size        => (Declared_Format = Modern
+							and FLG_Content_Size),
+			Content_Size_Remaining  => Content_Size,
 			Is_Compressed           => (Declared_Format = Legacy),
 			History                 => (others => 0),
 			History_Pos             => 0,
 			Hash_All_Data           => LZ4Ada.XXHash32.Init
 		);
 	end Init;
+
+	procedure Check_Flag_Validity(FLG_Version: in U8;
+							Reserved: in Boolean) is
+	begin
+		if FLG_Version /= 1 then
+			raise Not_Supported with
+				"Only LZ4 frame format version 01 supported. " &
+				"Detected " & U8'Image(FLG_Version) &
+				" instead.";
+		end if;
+		if Reserved then
+			raise Not_Supported with
+				"Found reserved bits /= 0. Data might be too " &
+				"new to be processed by this implementation!";
+		end if;
+	end Check_Flag_Validity;
+
+	function Block_Size_Table(BD_Block_Max_Size: in U8) return Integer is
+	begin
+		case BD_Block_Max_Size is
+		when 4      => return       64 * 1024; -- 64 KiB
+		when 5      => return      256 * 1024; -- 256 KiB
+		when 6      => return     1024 * 1024; -- 1 MiB
+		when 7      => return 4 * 1024 * 1024; -- 4 MiB
+		when others => raise Not_Supported with
+					"Unknown maximum block size flag: " &
+					U8'Image(BD_Block_Max_Size);
+		end case;
+	end Block_Size_Table;
+
+	procedure Check_Header_Checksum(Data: in Octets; HC: in U8) is
+		Computed_HC: constant U8 := Shift_Right(U8(LZ4Ada.XXHash32.Hash(
+							Data) and 16#ff#), 8);
+	begin
+		if HC /= Computed_HC then
+			raise Checksum_Error with
+				"Computed Header Checksum " &
+				U8'Image(Computed_HC) & " does not match " &
+				"expected Header Checksum " & U8'Image(HC);
+		end if;
+	end Check_Header_Checksum;
+
+	function Load_64(Data: in Octets) return U64 is
+		Ret: U64;
+		for Ret'Address use Data'Address;
+	begin
+		return Ret;
+	end Load_64;
 
 	function Update(Ctx: in out Decompressor;
 			Input:  in  Octets; Num_Consumed: out Integer;
@@ -144,6 +176,9 @@ package body LZ4Ada is
 	begin
 		Num_Consumed := 0;
 		Num_Produced := 0;
+		if Ctx.Is_Format = Skippable then
+			return Ctx.Skip(Input, Num_Consumed);
+		end if;
 		if Ctx.Is_At_End_Mark then
 			return Ctx.Check_End_Mark(Input, Num_Consumed);
 		end if;
@@ -166,6 +201,15 @@ package body LZ4Ada is
 		end if;
 		return False;
 	end Update;
+
+	function Skip(Ctx: in out Decompressor; Input: in Octets;
+				Num_Consumed: in out Integer) return Boolean is
+		Remain: constant Integer := Integer(Ctx.Content_Size_Remaining);
+	begin
+		Num_Consumed := Min(Input'Length, Remain);
+		Ctx.Content_Size_Remaining := U64(Remain - Num_Consumed);
+		return Ctx.Content_Size_Remaining = 0;
+	end Skip;
 
 	function Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 				Num_Consumed: in out Integer) return Boolean is
@@ -322,9 +366,9 @@ package body LZ4Ada is
 					Input_Want - 1),
 				Output, Num_Produced
 			);
-			Num_Consumed := Num_Consumed + Input_Want;
+			Num_Consumed            := Num_Consumed + Input_Want;
 			Ctx.Input_Buffer_Filled := 0;
-			Ctx.Input_Length := -1;
+			Ctx.Input_Length        := -1;
 		end if;
 	end Cache_Data_And_Process_If_Full;
 
@@ -434,6 +478,16 @@ package body LZ4Ada is
 		if Ctx.Content_Checksum_Length /= 0 then
 			Ctx.Hash_All_Data.Update(Data);
 		end if;
+		if Ctx.Has_Content_Size then
+			if Ctx.Content_Size_Remaining < Data'Length then
+				raise Data_Corruption with
+					"Produced content size exceeds " &
+					"declared content size. The supplied " &
+					"data is inconsistent.";
+			end if;
+			Ctx.Content_Size_Remaining :=
+				Ctx.Content_Size_Remaining - Data'Length;
+		end if;
 	end Write_Output;
 
 	procedure Historize(Ctx: in out Decompressor; Data: in Octets) is
@@ -496,7 +550,7 @@ package body LZ4Ada is
 			if   (Offset_Last < Offset_First) 
 			then (Ctx.History(Offset_First .. Ctx.History'Last) &
 						Ctx.History(0 .. Offset_Last))
-			else (Ctx.HIstory(Offset_First .. Offset_Last))
+			else (Ctx.History(Offset_First .. Offset_Last))
 		));
 	end Output_With_History_No_Overlap;
 
@@ -562,11 +616,11 @@ package body LZ4Ada is
 		function Final(Ctx: in Hasher) return U32 is
 			Ret: U32 := U32(Ctx.Total_Length and 16#ffffffff#) +
 				(if   (Ctx.Total_Length >= U64(Max_Buffer_Size))
-				then (Rotate_Left(Ctx.State_0,  1) +
+				then  ( Rotate_Left(Ctx.State_0,  1) +
 					Rotate_Left(Ctx.State_1,  7) +
 					Rotate_Left(Ctx.State_2, 12) +
 					Rotate_Left(Ctx.State_3, 18))
-				else (Ctx.State_2 + Prime_5));
+				else  (Ctx.State_2 + Prime_5));
 			Data: Integer := 0;
 		begin
 			while (Data + 3) < Ctx.Buffer_Size loop

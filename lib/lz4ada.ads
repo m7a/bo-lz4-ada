@@ -37,6 +37,7 @@ package LZ4Ada is
 
 	subtype U8  is Interfaces.Unsigned_8;
 	subtype U32 is Interfaces.Unsigned_32;
+	subtype U64 is Interfaces.Unsigned_64;
 	type Octets is array (Integer range <>) of U8;
 
 	Checksum_Error:  exception;
@@ -116,7 +117,6 @@ package LZ4Ada is
 		Prime_5: constant U32 :=  374761393;
 		Max_Buffer_Size: constant Integer := 16;
 
-		subtype U64 is Interfaces.Unsigned_64;
 		procedure Process(Ctx: in out Hasher; Data: in Octets)
 						with Pre => Data'Length = 16;
 
@@ -144,6 +144,14 @@ private
 	Block_Size_Bytes: constant Integer := 4;
 
 	-- Forward declarations
+	procedure Check_Flag_Validity(FLG_Version: in U8;
+							Reserved: in Boolean);
+	function Block_Size_Table(BD_Block_Max_Size: in U8) return Integer;
+	procedure Check_Header_Checksum(Data: in Octets; HC: in U8);
+	function Load_64(Data: in Octets) return U64
+						with Pre => Data'Length = 8;
+	function Skip(Ctx: in out Decompressor; Input: in Octets;
+				Num_Consumed: in out Integer) return Boolean;
 	function Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 				Num_Consumed: in out Integer) return Boolean;
 	-- TODO z Num_Consumed = 0 predondition can be lifted by improving the
@@ -176,7 +184,7 @@ private
 			Offset: in Integer; Match_Length: in Integer)
 			with Pre => Match_Length <= Offset;
 
-	type Format is (Legacy, Modern);
+	type Format is (Legacy, Modern, Skippable);
 
 	type Decompressor(Size_Last: Integer) is tagged limited record
 		Is_Format:               Format;
@@ -187,6 +195,8 @@ private
 		Input_Buffer_Filled:     Integer; -- how much data is in there
 		Input_Length:            Integer; -- Declared current block len
 		Is_Compressed:           Boolean; -- current block compressed YN
+		Has_Content_Size:        Boolean;
+		Content_Size_Remaining:  U64;
 		History:                 Octets(0 .. History_Size - 1);
 		History_Pos:             Integer;
 		Hash_All_Data:           LZ4Ada.XXHash32.Hasher;
