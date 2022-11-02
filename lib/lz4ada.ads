@@ -47,11 +47,10 @@ package LZ4Ada is
 	type Decompressor(Size_Last: Integer) is tagged limited private;
 
 	function Init(Input: in Octets; Num_Consumed: out Integer)
-				return Decompressor
-				with Pre => Input'Length >= 7;
+			return Decompressor with Pre => Input'Length >= 7;
 	function Init(Input: in Ada.Streams.Stream_Element_Array;
-				Num_Consumed: out Integer) return Decompressor
-				with Pre => Input'Length >= 7;
+			Num_Consumed: out Ada.Streams.Stream_Element_Offset)
+			return Decompressor with Pre => Input'Length >= 7;
 
 	function Get_Minimum_Output_Buffer_Size(Ctx: in Decompressor)
 								return Integer;
@@ -63,10 +62,10 @@ package LZ4Ada is
 					Ctx.Get_Minimum_Output_Buffer_Size;
 	function Update(Ctx: in out Decompressor;
 			Input: in Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out Integer;
+			Num_Consumed: out Ada.Streams.Stream_Element_Offset;
 			Output: out Ada.Streams.Stream_Element_Array;
-			Num_Produced: out Integer) return Boolean
-			with Pre => Output'Length >=
+			Num_Produced: out Ada.Streams.Stream_Element_Offset)
+			return Boolean with Pre => Output'Length >=
 					Ctx.Get_Minimum_Output_Buffer_Size;
 
 	-- XXHash32 Implementation based on the following C++ implementation:

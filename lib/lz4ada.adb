@@ -4,26 +4,37 @@ package body LZ4Ada is
 
 	-- Stream_Element_Array based functions --
 
+	-- Essentially performs unchecked conversions between the types on
+	-- the assumption that they are just different names for the same
+	-- thing. Use with care.
 	function Init(Input: in Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out Integer) return Decompressor is
+			Num_Consumed: out Ada.Streams.Stream_Element_Offset)
+			return Decompressor is
 		Input_Conv: Octets(0 .. Input'Length - 1);
 		for Input_Conv'Address use Input'Address;
+		Consumed_Conv: Integer;
+		for Consumed_Conv'Address use Num_Consumed'Address;
 	begin
-		return Init(Input_Conv, Num_Consumed);
+		return Init(Input_Conv, Consumed_Conv);
 	end Init;
 
 	function Update(Ctx: in out Decompressor;
-				Input: in Ada.Streams.Stream_Element_Array;
-				Num_Consumed: out Integer;
-				Output: out Ada.Streams.Stream_Element_Array;
-				Num_Produced: out Integer) return Boolean is
+			Input: in Ada.Streams.Stream_Element_Array;
+			Num_Consumed: out Ada.Streams.Stream_Element_Offset;
+			Output: out Ada.Streams.Stream_Element_Array;
+			Num_Produced: out Ada.Streams.Stream_ELement_Offset)
+			return Boolean is
 		Input_Conv: Octets(0 .. Input'Length - 1);
 		for Input_Conv'Address use Input'Address;
 		Output_Conv: Octets(0 .. Output'Length - 1);
 		for Output_Conv'Address use Output'Address;
+		Consumed_Conv: Integer;
+		for Consumed_Conv'Address use Num_Consumed'Address;
+		Produced_Conv: Integer;
+		for Produced_Conv'Address use Num_Produced'Address;
 	begin
-		return Ctx.Update(Input_Conv, Num_Consumed, Output_Conv,
-								Num_Produced);
+		return Ctx.Update(Input_Conv, Consumed_Conv, Output_Conv,
+								Produced_Conv);
 	end Update;
 
 	-- Octets based functions --
@@ -72,8 +83,9 @@ package body LZ4Ada is
 			-- skip over dictionary ID
 			Cursor := Cursor + FLG_Dictionary_ID * 4;
 
-			Check_Header_Checksum(Input(Input'First .. Cursor - 1),
-						Input(Cursor));
+			-- +4 since FrameDescriptor excludes magic per spec.
+			Check_Header_Checksum(Input(Input'First + 4 ..
+						Cursor - 1), Input(Cursor));
 			Num_Consumed := Cursor - Input'First + 1;
 		when Magic_Legacy =>
 			Declared_Format        := Legacy;
@@ -150,9 +162,10 @@ package body LZ4Ada is
 		end case;
 	end Block_Size_Table;
 
+	-- TODO CSTAT CURRENTLY FAILS WITH MISMATCHING CHECKSUM. OUTPUT AS HEX THEN COMPARE WITH XXH REFERENCE AND IN HEX EDITOR!
 	procedure Check_Header_Checksum(Data: in Octets; HC: in U8) is
-		Computed_HC: constant U8 := Shift_Right(U8(LZ4Ada.XXHash32.Hash(
-							Data) and 16#ff#), 8);
+		Computed_HC: constant U8 := U8(Shift_Right(LZ4Ada.XXHash32.Hash(
+							Data), 8) and 16#ff#);
 	begin
 		if HC /= Computed_HC then
 			raise Checksum_Error with
