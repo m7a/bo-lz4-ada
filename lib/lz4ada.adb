@@ -22,19 +22,20 @@ package body LZ4Ada is
 			Input: in Ada.Streams.Stream_Element_Array;
 			Num_Consumed: out Ada.Streams.Stream_Element_Offset;
 			Output: out Ada.Streams.Stream_Element_Array;
-			Num_Produced: out Ada.Streams.Stream_ELement_Offset)
+			Num_Produced: out Ada.Streams.Stream_Element_Offset)
 			return Boolean is
 		Input_Conv: Octets(0 .. Input'Length - 1);
 		for Input_Conv'Address use Input'Address;
 		Output_Conv: Octets(0 .. Output'Length - 1);
 		for Output_Conv'Address use Output'Address;
-		Consumed_Conv: Integer;
-		for Consumed_Conv'Address use Num_Consumed'Address;
-		Produced_Conv: Integer;
-		for Produced_Conv'Address use Num_Produced'Address;
+		Consumed_Cnv: Integer;
+		Produced_Cnv: Integer;
+		Ret: constant Boolean := Ctx.Update(Input_Conv, Consumed_Cnv,
+						Output_Conv, Produced_Cnv);
 	begin
-		return Ctx.Update(Input_Conv, Consumed_Conv, Output_Conv,
-								Produced_Conv);
+		Num_Consumed := Ada.Streams.Stream_Element_Offset(Consumed_Cnv);
+		Num_Produced := Ada.Streams.Stream_Element_Offset(Produced_Cnv);
+		return Ret;
 	end Update;
 
 	-- Octets based functions --
@@ -104,8 +105,8 @@ package body LZ4Ada is
 							Input'First + 7)));
 		when others =>
 			raise Not_Supported with
-					"Invalid or unsupported magic: " &
-					U32'Image(Magic_NB);
+					"Invalid or unsupported magic: 0x" &
+					To_Hex(Magic_NB);
 		end case;
 		return (
 			Is_Format               => Declared_Format,
@@ -139,7 +140,7 @@ package body LZ4Ada is
 		if FLG_Version /= 1 then
 			raise Not_Supported with
 				"Only LZ4 frame format version 01 supported. " &
-				"Detected " & U8'Image(FLG_Version) &
+				"Detected 0x" & To_Hex(FLG_Version) &
 				" instead.";
 		end if;
 		if Reserved then
@@ -157,23 +158,37 @@ package body LZ4Ada is
 		when 6      => return     1024 * 1024; -- 1 MiB
 		when 7      => return 4 * 1024 * 1024; -- 4 MiB
 		when others => raise Not_Supported with
-					"Unknown maximum block size flag: " &
-					U8'Image(BD_Block_Max_Size);
+					"Unknown maximum block size flag: 0x" &
+					To_Hex(BD_Block_Max_Size);
 		end case;
 	end Block_Size_Table;
 
-	-- TODO CSTAT CURRENTLY FAILS WITH MISMATCHING CHECKSUM. OUTPUT AS HEX THEN COMPARE WITH XXH REFERENCE AND IN HEX EDITOR!
 	procedure Check_Header_Checksum(Data: in Octets; HC: in U8) is
 		Computed_HC: constant U8 := U8(Shift_Right(LZ4Ada.XXHash32.Hash(
 							Data), 8) and 16#ff#);
 	begin
 		if HC /= Computed_HC then
 			raise Checksum_Error with
-				"Computed Header Checksum " &
-				U8'Image(Computed_HC) & " does not match " &
-				"expected Header Checksum " & U8'Image(HC);
+				"Computed Header Checksum 0x" &
+				To_Hex(Computed_HC) & " does not match " &
+				"expected Header Checksum 0x" & To_Hex(HC);
 		end if;
 	end Check_Header_Checksum;
+
+	function To_Hex(Num: in U8) return String is
+		Hex_Tbl: constant String := "0123456789abcdef";
+	begin
+		return (Hex_Tbl(Integer(Shift_Right(Num, 4)) + 1),
+			Hex_Tbl(Integer(Num and 16#0f#)      + 1));
+	end To_Hex;
+
+	function To_Hex(Num: in U32) return String is
+		Conv: Octets(0 .. 3);
+		for Conv'Address use Num'Address;
+	begin
+		return To_Hex(Conv(3)) & To_Hex(Conv(2)) &
+					To_Hex(Conv(1)) & To_Hex(Conv(0));
+	end To_Hex;
 
 	function Load_64(Data: in Octets) return U64 is
 		Ret: U64;
@@ -249,11 +264,11 @@ package body LZ4Ada is
 							Required_Input_Length;
 				if Checksum /= Compare then
 					raise Checksum_Error with
-						"Computed content checksum " &
-						U32'Image(Compare) & " does " &
+						"Computed content checksum 0x" &
+						To_Hex(Compare) & " does " &
 						"not match declared content " &
-						"checksum " &
-						U32'Image(Compare) & ".";
+						"checksum 0x" &
+						To_Hex(Compare) & ".";
 				end if;
 			end;
 			return True;
@@ -304,14 +319,16 @@ package body LZ4Ada is
 				return;
 			end if;
 			if Ctx.Is_Format = Modern then
+				-- Bit = 1 aka. set   means uncompressed.
+				-- Bit = 0 aka. unset means compressed.
 				Ctx.Is_Compressed := (
-					(Length_Word and 16#80000000#) /= 0);
+					(Length_Word and 16#80000000#) = 0);
 				Length_Word := Length_Word and 16#7ffffff#;
 			end if;
 			Ctx.Input_Length := Integer(Length_Word);
 			if (Ctx.Input_Length + Additional_Length) >
 						Ctx.Input_Buffer'Length then
-				Ctx.Input_Length := -1;
+				-- Ctx.Input_Length := -1; TODO SET AFTER MSG
 				raise Data_Corruption with
 					"Declared maximum data length " &
 					"exceeded. Buffer has " &
@@ -363,16 +380,19 @@ package body LZ4Ada is
 		Input_Avail: constant Integer := Input'Length - Num_Consumed;
 		Input_Want: constant Integer := Ctx.Input_Length +
 						Ctx.Block_Checksum_Length -
-						Ctx.Input_Buffer_Filled ;
+						Ctx.Input_Buffer_Filled +
+						Block_Size_Bytes;
 	begin
 		if Input_Want > Input_Avail then
 			Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
 				Ctx.Input_Buffer_Filled + Input_Avail - 1) :=
 				Input(Input'First + Num_Consumed .. Input'Last);
+			Ctx.Input_Buffer_Filled := Ctx.Input_Buffer_Filled +
+				Input_Avail;
 			Num_Consumed := Num_Consumed + Input_Avail;
 		else
 			Ctx.Decode_Full_Block_With_Trailer(
-				Ctx.Input_Buffer(0 ..
+				Ctx.Input_Buffer(Block_Size_Bytes ..
 					Ctx.Input_Buffer_Filled - 1) &
 				Input(Input'First + Num_Consumed ..
 					Input'First + Num_Consumed +
@@ -410,17 +430,16 @@ package body LZ4Ada is
 	begin
 		if Compute_Checksum /= Expect_Checksum then
 			raise Checksum_Error with
-				"Declared checksum is " & U32'Image(
-				Expect_Checksum) & ", but computed one is " &
-				U32'Image(Compute_Checksum) & ".";
+				"Declared checksum is 0x" & To_Hex(
+				Expect_Checksum) & ", but computed one is 0x" &
+				To_Hex(Compute_Checksum) & ".";
 		end if;
 	end Check_Checksum;
 
 	procedure Decompress_Full_Block(Ctx: in out Decompressor;
 					Raw_Data: in Octets; Output: out Octets;
 					Num_Produced: in out Integer) is
-		Has_Reached_End: Boolean := False;
-		Idx:             Integer := Raw_Data'First;
+		Idx: Integer := Raw_Data'First;
 
 		procedure Process_Variable_Length(Var: in out Integer) is
 			Tmp: U8;
@@ -451,7 +470,16 @@ package body LZ4Ada is
 				Idx := Idx + Num_Literals;
 			end if;
 			if Idx > Raw_Data'Last then
-				Has_Reached_End := True;
+				if Match_Length /= 0 then
+					raise Data_Corruption with
+						"Match_Length=" & Integer'Image(
+						Match_Length) & " suggests " &
+						"compressed data but this " &
+						"sequence already ends after " &
+						"the literals. This might " &
+						"also happen with an " &
+						"untypical encoder?";
+				end if;
 				return;
 			end if;
 			-- Match Copy
@@ -468,17 +496,9 @@ package body LZ4Ada is
 							Match_Length + 4);
 		end Decompress_Sequence;
 	begin
-		while Idx <= Raw_Data'Last and not Has_Reached_End loop
+		while Idx <= Raw_Data'Last loop -- and not Has_Reached_End loop
 			Decompress_Sequence;
 		end loop;
-		if (Idx > Raw_Data'Last) /= Has_Reached_End then
-			raise Data_Corruption with
-				"Invalid block end: May not have processed " &
-				"all data: Idx = " & Integer'Image(Idx) &
-				", Last = " & Integer'Image(Raw_Data'Last) &
-				", Has_Reached_End = " &
-				Boolean'Image(Has_Reached_End);
-		end if;
 	end Decompress_Full_Block;
 
 	procedure Write_Output(Ctx: in out Decompressor; Output: in out Octets;
@@ -588,6 +608,8 @@ package body LZ4Ada is
 			if Ctx.Buffer_Size + Input'Length < Max_Buffer_Size then
 				Ctx.Buffer(Ctx.Buffer_Size .. Ctx.Buffer_Size +
 						Input'Length - 1) := Input;
+				Ctx.Buffer_Size := Ctx.Buffer_Size +
+								Input'Length;
 				return;
 			end if;
 			if Ctx.Buffer_Size > 0 then

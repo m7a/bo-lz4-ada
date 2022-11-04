@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project default="build">
+<property name="masysma.target" value="lz4ada"/> 
+<target name="build">
+	<chmod file="${masysma.target}.ali" perm="+w"/>
+	<exec executable="gnatmake" failonerror="true">
+		<arg value="-Wall"/>
+		<arg value="-O3"/>
+		<arg value="-fPIC"/>
+		<arg value="-c"/>
+		<arg value="${masysma.target}.adb"/>
+	</exec>
+	<exec executable="gcc" failonerror="true">
+		<arg value="-shared"/>
+		<arg value="-o"/>
+		<arg value="lib${masysma.target}.so"/>
+		<arg value="${masysma.target}.o"/>
+	</exec>
+	<chmod file="${masysma.target}.ali" perm="-w"/>
+	<delete file="${masysma.target}.o"/>
+</target>
+<target name="clean"/>
+<target name="dist-clean">
+	<delete file="lib${masysma.target}.so"/>
+	<delete file="${masysma.target}.ali"/>
+</target>
+</project>

@@ -68,6 +68,10 @@ package LZ4Ada is
 			return Boolean with Pre => Output'Length >=
 					Ctx.Get_Minimum_Output_Buffer_Size;
 
+	-- Useful routines for testing purposes. Not part of the stable API!
+	function To_Hex(Num: in U8)  return String;
+	function To_Hex(Num: in U32) return String;
+
 	-- XXHash32 Implementation based on the following C++ implementation:
 	-- https://github.com/stbrumme/xxhash/blob/master/xxhash32.h
 	-- +--------------------------------------------------------------------

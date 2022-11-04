@@ -16,12 +16,14 @@ procedure UnLZ4Ada is
 	Consumed:  Stream_Element_Offset;
 
 	procedure Process_Frame is
-		Ctx:          LZ4Ada.Decompressor := LZ4Ada.Init(
-				Buf_Input(0 .. Last), Consumed);
-		Buf_Output:   Stream_Element_Array(0 .. Stream_Element_Offset(
-				Ctx.Get_Minimum_Output_Buffer_Size - 1));
-		Produced:     Stream_Element_Offset := 0;
-		End_Of_Frame: Boolean := False;
+		Total_Consumed: Stream_Element_Offset;
+		Ctx:            LZ4Ada.Decompressor := LZ4Ada.Init(
+					Buf_Input(0 .. Last), Total_Consumed);
+		Buf_Output:     Stream_Element_Array(0 ..
+					Stream_Element_Offset(Ctx.
+					Get_Minimum_Output_Buffer_Size - 1));
+		Produced:       Stream_Element_Offset := 0;
+		End_Of_Frame:   Boolean := False;
 	begin
 		loop
 			-- Loop over input until something produced.
@@ -29,13 +31,15 @@ procedure UnLZ4Ada is
 			-- up the buffer since the contract of Update requires
 			-- us to provide at least the minimum output buffer
 			-- size of free space upon each invocation.
-			while not End_Of_Frame and Consumed <= Last and
+			while not End_Of_Frame and Total_Consumed <= Last and
 							Produced = 0 loop
-				End_Of_Frame := Ctx.Update(Buf_Input(Consumed ..
-					Last), Consumed, Buf_Output, Produced);
+				End_Of_Frame := Ctx.Update(Buf_Input(
+					Total_Consumed .. Last), Consumed,
+					Buf_Output, Produced);
+				Total_Consumed := Total_Consumed + Consumed;
 			end loop;
 			if Produced > 0 then
-				Write(Stdout.all, Buf_Output(0 .. Produced-1));
+				Write(Stdout.all, Buf_Output(0 .. Produced - 1));
 				Produced := 0;
 			end if;
 
@@ -43,13 +47,14 @@ procedure UnLZ4Ada is
 			-- When EOF occurs (Last < 0) but no end of frame
 			-- was detected this hints towards a data corruption.
 			exit when End_Of_Frame;
-			if Consumed > Last then
+			if Total_Consumed > Last then
 				Read(Stdin.all, Buf_Input, Last);
 				if Last < 0 then
 					raise Constraint_Error with
 						"End not signalled by library" &
 						". Unable to process all data";
 				end if;
+				Total_Consumed := 0;
 			end if;
 		end loop;
 	end Process_Frame;
