@@ -4,6 +4,8 @@
 <target name="build">
 	<chmod file="${masysma.target}.ali" perm="+w"/>
 	<exec executable="gnatmake" failonerror="true">
+		<!-- <arg value="-f"/>  for profiling -->
+		<!-- <arg value="-pg"/> for profiling -->
 		<arg value="-Wall"/>
 		<arg value="-O3"/>
 		<arg value="-fPIC"/>
