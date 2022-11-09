@@ -89,7 +89,7 @@ package LZ4Ada is
 	-- |                                                                   |
 	-- | This software is provided 'as-is', without any express or implied |
 	-- | warranty. In no event will the author be held liable for any      |
-	-- damages arising from the use of this software.                      |
+	-- | damages arising from the use of this software.                    |
 	-- |                                                                   |
 	-- | Permission is granted to anyone to use this software for any      |
 	-- | purpose, including commercial applications, and to alter it and   |
@@ -110,6 +110,7 @@ package LZ4Ada is
 		function  Init return Hasher;
 		function  Init(Seed: in U32) return Hasher;
 		procedure Update(Ctx: in out Hasher; Input: in Octets);
+		procedure Update1(Ctx: in out Hasher; Input: in U8);
 		function  Final(Ctx: in Hasher) return U32;
 		function  Hash(Input: in Octets) return U32; -- One-Stop Call
 	private
@@ -178,7 +179,6 @@ private
 					Num_Produced: in out Integer);
 	procedure Write_Output(Ctx: in out Decompressor; Output: in out Octets;
 			Num_Produced: in out Integer; Data: in Octets);
-	procedure Historize(Ctx: in out Decompressor; Data: in Octets);
 	procedure Output_With_History(Ctx: in out Decompressor;
 			Output: out Octets; Num_Produced: in out Integer;
 			Offset: in Integer; Match_Length: in Integer);
@@ -209,7 +209,6 @@ private
 				return Integer is (Ctx.Input_Buffer'Length -
 				Block_Size_Bytes - Ctx.Block_Checksum_Length);
 
-	-- TODO z might want to make this more efficient?
 	function Load_32(Src: in Octets) return U32
 				is (U32(Src(Src'First)) or
 				Shift_Left(U32(Src(Src'First + 1)), 8) or

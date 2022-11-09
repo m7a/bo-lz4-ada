@@ -328,13 +328,13 @@ package body LZ4Ada is
 			Ctx.Input_Length := Integer(Length_Word);
 			if (Ctx.Input_Length + Additional_Length) >
 						Ctx.Input_Buffer'Length then
-				-- Ctx.Input_Length := -1; TODO SET AFTER MSG
+				Ctx.Input_Length := -1;
 				raise Data_Corruption with
 					"Declared maximum data length " &
 					"exceeded. Buffer has " &
 					Integer'Image(Ctx.Input_Buffer'Length) &
 					" bytes, current block requires " &
-					Integer'Image(Ctx.Input_Length) &
+					U32'Image(Length_Word) &
 					" bytes + " &
 					Integer'Image(Additional_Length) &
 					" bytes for metadata.";
@@ -504,13 +504,19 @@ package body LZ4Ada is
 	procedure Write_Output(Ctx: in out Decompressor; Output: in out Octets;
 			Num_Produced: in out Integer; Data: in Octets) is
 	begin
-		Output(Output'First + Num_Produced ..
-			Output'First + Num_Produced + Data'Length - 1) := Data;
-		Num_Produced := Num_Produced + Data'Length;
-		Ctx.Historize(Data);
-		if Ctx.Content_Checksum_Length /= 0 then
-			Ctx.Hash_All_Data.Update(Data);
-		end if;
+		-- Looks a little dumb but is faster than some smarter
+		-- alternatives. Especially, array slices seem to be slower
+		-- here!
+		for I in Data'Range loop
+			Output(Output'First + Num_Produced) := Data(I);
+			Ctx.History(Ctx.History_Pos) := Data(I);
+			if Ctx.Content_Checksum_Length /= 0 then
+				Ctx.Hash_All_Data.Update1(Data(I));
+			end if;
+			Num_Produced := Num_Produced + 1;
+			Ctx.History_Pos := (Ctx.History_Pos + 1) mod
+							Ctx.History'Length;
+		end loop;
 		if Ctx.Has_Content_Size then
 			if Ctx.Content_Size_Remaining < Data'Length then
 				raise Data_Corruption with
@@ -523,51 +529,18 @@ package body LZ4Ada is
 		end if;
 	end Write_Output;
 
-	procedure Historize(Ctx: in out Decompressor; Data: in Octets) is
-	begin
-		if Data'Length >= Ctx.History'Length then
-			-- Replace entire history
-			Ctx.History := Data(Data'Last - Ctx.History'Length + 1
-								.. Data'Last);
-			Ctx.History_Pos := 0;
-		elsif Ctx.History_Pos + Data'Length - 1 > Ctx.History'Last then
-			-- Two slices necessary
-			declare
-				Space_In_Hist: constant Integer :=
-					Ctx.History'Last - Ctx.History_Pos + 1;
-				Second_End_Idx: constant Integer :=
-					Data'Length - Space_In_Hist - 1;
-			begin
-				Ctx.History(Ctx.History_Pos .. Ctx.History'Last)
-					:= Data(Data'First ..
-						Data'First + Space_In_Hist - 1);
-				Ctx.History(0 .. Second_End_Idx)
-					:= Data(Data'First + Space_In_Hist ..
-						Data'Last);
-				Ctx.History_Pos := Second_End_Idx + 1;
-			end;
-		else
-			-- One slice sufficient
-			Ctx.History(Ctx.History_Pos .. Ctx.History_Pos +
-						Data'Length - 1) := Data;
-			Ctx.History_Pos := Ctx.History_Pos + Data'Length;
-		end if;
-	end Historize;
-
 	procedure Output_With_History(Ctx: in out Decompressor;
 			Output: out Octets; Num_Produced: in out Integer;
 			Offset: in Integer; Match_Length: in Integer) is
+		MLR: Integer := Match_Length;
 	begin
-		if Match_Length <= Offset then
-			Ctx.Output_With_History_No_Overlap(Output, Num_Produced,
-							Offset, Match_Length);
-		else
-			Ctx.Output_With_History_No_Overlap(Output, Num_Produced,
-							Offset, Offset);
-			-- tail recursion
-			Ctx.Output_With_History(Output, Num_Produced, Offset,
-							Match_Length - Offset);
-		end if;
+		while Offset < MLR loop
+			Ctx.Output_With_History_No_Overlap(Output,
+						Num_Produced, Offset, Offset);
+			MLR := MLR - Offset;
+		end loop;
+		Ctx.Output_With_History_No_Overlap(Output, Num_Produced,
+								Offset, MLR);
 	end Output_With_History;
 
 	procedure Output_With_History_No_Overlap(Ctx: in out Decompressor;
@@ -601,51 +574,36 @@ package body LZ4Ada is
 		end Init;
 
 		procedure Update(Ctx: in out Hasher; Input: in Octets) is
-			Data:     Integer := Input'First;
-			Load_New: Integer;
 		begin
-			Ctx.Total_Length := Ctx.Total_Length + Input'Length;
-			if Ctx.Buffer_Size + Input'Length < Max_Buffer_Size then
-				Ctx.Buffer(Ctx.Buffer_Size .. Ctx.Buffer_Size +
-						Input'Length - 1) := Input;
-				Ctx.Buffer_Size := Ctx.Buffer_Size +
-								Input'Length;
-				return;
-			end if;
-			if Ctx.Buffer_Size > 0 then
-				Load_New := Ctx.Buffer'Last - Ctx.Buffer_Size;
-				Ctx.Buffer(Ctx.Buffer_Size .. Ctx.Buffer'Last)
-					:= Input(Data .. Data + Load_New);
-				Data := Data + Load_New + 1;
-				Ctx.Process(Ctx.Buffer);
-			end if;
-			while Data <= Input'Last - Max_Buffer_Size + 1 loop
-				Ctx.Process(Input(Data ..
-						Data + Max_Buffer_Size - 1));
-				Data := Data + Max_Buffer_Size;
+			for I in Input'Range loop
+				Ctx.Update1(Input(I));
 			end loop;
-			Ctx.Buffer_Size := Input'Last - Data + 1;
-			Ctx.Buffer(0 .. Input'Last - Data) :=
-						Input(Data .. Input'Last);
 		end Update;
 
-		-- efficient data parallel notation
+		procedure Update1(Ctx: in out Hasher; Input: in U8) is
+		begin
+			Ctx.Buffer(Ctx.Buffer_Size) := Input;
+			Ctx.Total_Length := Ctx.Total_Length + 1;
+			Ctx.Buffer_Size  := Ctx.Buffer_Size  + 1;
+			if Ctx.Buffer_Size = Max_Buffer_Size then
+				Ctx.Buffer_Size := 0;
+				Ctx.Process(Ctx.Buffer);
+			end if;
+		end Update1;
+
 		procedure Process(Ctx: in out Hasher; Data: in Octets) is
-			D0: constant Integer := Data'First;
-			B0: constant U32 := Load_32(Data(D0      .. D0 +  3));
-			B1: constant U32 := Load_32(Data(D0 +  4 .. D0 +  7));
-			B2: constant U32 := Load_32(Data(D0 +  8 .. D0 + 11));
-			B3: constant U32 := Load_32(Data(D0 + 12 .. D0 + 15));
+			B: Array(0..3) of U32;
+			for B'Address use Data'Address;
 
 			procedure Rot_Mul(S: in out U32; B: in U32) is
 			begin
 				S := Rotate_Left(S + B * Prime_2, 13) * Prime_1;
 			end Rot_Mul;
 		begin
-			Rot_Mul(Ctx.State_0, B0);
-			Rot_Mul(Ctx.State_1, B1);
-			Rot_Mul(Ctx.State_2, B2);
-			Rot_Mul(Ctx.State_3, B3);
+			Rot_Mul(Ctx.State_0, B(0));
+			Rot_Mul(Ctx.State_1, B(1));
+			Rot_Mul(Ctx.State_2, B(2));
+			Rot_Mul(Ctx.State_3, B(3));
 		end Process;
 
 		function Final(Ctx: in Hasher) return U32 is
@@ -669,7 +627,6 @@ package body LZ4Ada is
 							Prime_5, 11) * Prime_1;
 				Data := Data + 1;
 			end loop;
-
 			Ret := (Ret xor Shift_Right(Ret, 15)) * Prime_2;
 			Ret := (Ret xor Shift_Right(Ret, 13)) * Prime_3;
 			return Ret xor Shift_Right(Ret, 16);
@@ -678,7 +635,9 @@ package body LZ4Ada is
 		function Hash(Input: in Octets) return U32 is
 			Ctx: Hasher := Init;
 		begin
-			Ctx.Update(Input);
+			for I in Input'Range loop
+				Ctx.Update1(Input(I));
+			end loop;
 			return Ctx.Final;
 		end Hash;
 
