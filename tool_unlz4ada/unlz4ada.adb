@@ -1,5 +1,6 @@
 with Ada.Text_IO;
 with Ada.Text_IO.Text_Streams;
+with Ada.Assertions;
 with Ada.Streams;
 use  Ada.Streams;
 with LZ4Ada;
@@ -25,6 +26,8 @@ procedure UnLZ4Ada is
 		Produced:       Stream_Element_Offset := 0;
 		End_Of_Frame:   Boolean := False;
 	begin
+		Ada.Assertions.Assert(Ctx.Get_Minimum_Output_Buffer_Size <=
+							Buf_Output'Length);
 		loop
 			-- Loop over input until something produced.
 			-- When something was produced output it to free
@@ -39,7 +42,8 @@ procedure UnLZ4Ada is
 				Total_Consumed := Total_Consumed + Consumed;
 			end loop;
 			if Produced > 0 then
-				Write(Stdout.all, Buf_Output(0 .. Produced - 1));
+				Write(Stdout.all,
+						Buf_Output(0 .. Produced - 1));
 				Produced := 0;
 			end if;
 
