@@ -1,6 +1,13 @@
 with Ada.Assertions;
 
-with Ada.Text_IO; -- local use TODO DEBUG ONLY
+--with Ada.Text_IO; -- local use TODO DEBUG ONLY
+
+-- TODO SHOULD MAKE USE OF THE FOLLWING
+--  -> add a query function for end of frame (or add out param to update)
+--  -> make the buffer an in out parameter everywhere with a function to query
+--     how large it should be allocated (externally!). This will permit a
+--     "copyless" design. API will then output a range of values to read.
+--     from the buffer.
 
 package body LZ4Ada is
 
@@ -518,39 +525,56 @@ package body LZ4Ada is
 	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets) is
 	begin
 		for I in Data'Range loop
-			Ctx.Output_Buffer(Ctx.Output_Pos) := Data(I);
-			Ctx.Output_Pos := Ctx.Output_Pos + 1;
-			if Ctx.Content_Checksum_Length /= 0 then
-				Ctx.Hash_All_Data.Update1(Data(I));
-			end if;
+			Ctx.Write_Output_Single(Data(I));
 		end loop;
+		Ctx.Decrease_Data_Size_Remaining(Data'Length);
+	end Write_Output;
+
+	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8) is
+	begin
+		Ctx.Output_Buffer(Ctx.Output_Pos) := Data;
+		Ctx.Output_Pos := Ctx.Output_Pos + 1;
+		if Ctx.Content_Checksum_Length /= 0 then
+			Ctx.Hash_All_Data.Update1(Data);
+		end if;
+	end Write_Output_Single;
+
+	procedure Decrease_Data_Size_Remaining(Ctx: in out Decompressor;
+							Data_Length: in U64) is
+	begin
 		if Ctx.Has_Content_Size then
-			if Ctx.Content_Size_Remaining < Data'Length then
+			if Ctx.Content_Size_Remaining < Data_Length then
 				raise Data_Corruption with
 					"Produced content size exceeds " &
 					"declared content size. The supplied " &
 					"data is inconsistent.";
 			end if;
 			Ctx.Content_Size_Remaining :=
-				Ctx.Content_Size_Remaining - Data'Length;
+				Ctx.Content_Size_Remaining - Data_Length;
 		end if;
-	end Write_Output;
+	end Decrease_Data_Size_Remaining;
 
 	procedure Output_With_History(Ctx: in out Decompressor;
 			Offset: in Integer; Match_Length: in Integer) is
 		Start_Output_Pos: constant Integer := Ctx.Output_Pos;
 		Src_Loc: Integer;
-		SA: Octets(0 .. 0); -- TODO DEBUG ONLY "SINGLE ARRAY". NEED TO OPTIMIZE THIS TEMPORARY SOLUTION
 	begin
 		for I in 0 .. (Match_Length - 1) loop
 			Src_Loc := Start_Output_Pos - Offset + I;
 			if Src_Loc < 0 then
 				Src_Loc := Src_Loc + Ctx.Output_Pos_History;
 			end if;
-			-- TODO IF OUT OF RANGE RAISE CORRUPTED
-			SA(0) := Ctx.Output_Buffer(Src_Loc);
-			Ctx.Write_Output(SA);
+			if Src_Loc < 0 then
+				raise Data_Corruption with
+					"Backreference location out of range." &
+					" Read from offset " &
+					Integer'Image(Src_Loc) &
+					" not possible (earliest available " &
+					"index is 0).";
+			end if;
+			Ctx.Write_Output_Single(Ctx.Output_Buffer(Src_Loc));
 		end loop;
+		Ctx.Decrease_Data_Size_Remaining(U64(Match_Length));
 	end Output_With_History;
 
 	package body XXHash32 is

@@ -173,6 +173,9 @@ private
 	function Decompress_Full_Block(Ctx: in out Decompressor;
 					Raw_Data: in Octets) return Octets;
 	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets);
+	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8);
+	procedure Decrease_Data_Size_Remaining(Ctx: in out Decompressor;
+							Data_Length: in U64);
 	procedure Output_With_History(Ctx: in out Decompressor;
 			Offset: in Integer; Match_Length: in Integer);
 
