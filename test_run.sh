@@ -1,6 +1,8 @@
 #!/bin/sh -eu
 # LZ4 Ada Test Script 1.0.0 (c) 2022 Ma_Sys.ma <info@masysma.net>
 
+ulimit -s 60000 # need enough stack size!
+
 root="$(cd "$(dirname "$0")" && pwd)"
 tmpd="$(mktemp -d)"
 arc=0
@@ -29,7 +31,7 @@ for i in test_vectors_lz4/*.lz4; do
 		printf '[ OK ] (%3.3f MiB/s)\n' "$mbs"
 	else
 		printf '[FAIL] rv=%s (%s)\n' "$rv" \
-			"$(head -c 20 "$tmpd/$namepart.tim" | tr '\n' ' ')"
+			"$(head -c 40 "$tmpd/$namepart.tim" | tr '\n' ' ')"
 		#printf 'good: %s != found: %s\n' "$chkgood" "$chkchck" # debug!
 		arc=1
 	fi
