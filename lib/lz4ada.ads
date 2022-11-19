@@ -44,26 +44,38 @@ package LZ4Ada is
 	Data_Corruption: exception;
 	Not_Supported:   exception;
 
-	type Decompressor(In_Last: Integer; Out_Last: Integer)
-						is tagged limited private;
+	type Decompressor(In_Last: Integer) is tagged limited private;
 
-	Empty_May_Consume_More: constant Octets(1 .. 0) := (others => 0);
-	Empty_Frame_Has_Ended:  constant Octets(2 .. 0) := (others => 0);
+	type Decompression_Status is record
+		Num_Consumed:    Integer;
+		Frame_Has_Ended: Boolean;
+		First:           Integer;
+		Last:            Integer;
+	end record;
 
-	function Init(Input: in Octets; Num_Consumed: out Integer)
+	function Init  (Input:           in Octets;
+			Num_Consumed:    out Integer;
+			Min_Buffer_Size: out Integer)
 			return Decompressor with Pre => Input'Length >= 7;
-	function Init(Input: in Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out Ada.Streams.Stream_Element_Offset)
+
+	function Init  (Input:           in Ada.Streams.Stream_Element_Array;
+			Num_Consumed:    out Ada.Streams.Stream_Element_Offset;
+			Min_Buffer_Size: out Ada.Streams.Stream_Element_Offset)
 			return Decompressor with Pre => Input'Length >= 7;
 
-	function Update(Ctx: in out Decompressor; Input: in Octets;
-			Num_Consumed: out Integer) return Octets;
+	procedure Update(Ctx:    in out Decompressor;
+			 Input:  in Octets;
+			 Buffer: in out Octets;
+			 Status: out Decompression_Status)
+			with Pre => (Buffer'First = 0);
 
-	function Update(Ctx: in out Decompressor;
-			Input: in Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out Ada.Streams.Stream_Element_Offset;
-			Frame_Has_Ended: out Boolean)
-			return Ada.Streams.Stream_Element_Array;
+	procedure Update(Ctx:          in out Decompressor;
+			 Input:        in Ada.Streams.Stream_Element_Array;
+			 Num_Consumed: out Ada.Streams.Stream_Element_Offset;
+			 Buffer:       in out Ada.Streams.Stream_Element_Array;
+			 Output_First: out Ada.Streams.Stream_Element_Offset;
+			 Output_Last:  out Ada.Streams.Stream_Element_Offset;
+			 Frame_Ended:  out Boolean);
 
 	-- Useful routines for testing purposes. Not part of the stable API!
 	function To_Hex(Num: in U8)  return String;
@@ -138,9 +150,8 @@ package LZ4Ada is
 
 private
 
-	Magic_Modern: constant U32 := 16#184d2204#;
-	Magic_Legacy: constant U32 := 16#184c2102#;
-
+	Magic_Modern:     constant U32     := 16#184d2204#;
+	Magic_Legacy:     constant U32     := 16#184c2102#;
 	History_Size:     constant Integer := 64 * 1024;
 	Block_Size_Bytes: constant Integer := 4;
 
@@ -151,44 +162,50 @@ private
 	procedure Check_Header_Checksum(Data: in Octets; HC: in U8);
 	function Load_64(Data: in Octets) return U64
 						with Pre => Data'Length = 8;
-	function Skip(Ctx: in out Decompressor; Input: in Octets;
-				Num_Consumed: in out Integer) return Octets;
-	function Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
-				Num_Consumed: in out Integer) return Octets;
+	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
+					Status: in out Decompression_Status);
+	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
+					Status: in out Decompression_Status);
 	-- TODO z Num_Consumed = 0 predondition can be lifted by improving the
 	--        implementation code.
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer)
 			with pre => Ctx.Input_Buffer_Filled < Block_Size_Bytes
 					and Num_Consumed = 0;
-	function Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
-			Input: in Octets; Num_Consumed: in out Integer)
-			return Octets;
-	function Cache_Data_And_Process_If_Full(Ctx: in out Decompressor;
-			Input: in Octets; Num_Consumed: in out Integer)
-			return Octets;
-	function Decode_Full_Block_With_Trailer(Ctx: in out Decompressor;
-			Input_Block: in Octets) return Octets;
+	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
+				Input: in Octets; Buffer: in out Octets;
+				Status: in out Decompression_Status);
+	procedure Cache_Data_And_Process_If_Full(Ctx: in out Decompressor;
+				Input: in Octets; Buffer: in out Octets;
+				Status: in out Decompression_Status);
+	procedure Decode_Full_Block_With_Trailer(
+				Ctx:         in out Decompressor;
+				Input_Block: in Octets;
+				Buffer:      in out Octets;
+				Status:      in out Decompression_Status);
 	procedure Check_Checksum(Data: in Octets; Expect_Checksum: in U32);
-	function Decompress_Full_Block(Ctx: in out Decompressor;
-					Raw_Data: in Octets) return Octets;
-	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets);
-	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8);
+	procedure Decompress_Full_Block(Ctx:    in out Decompressor;
+					Raw_Data: in Octets;
+					Buffer: in out Octets;
+					Status: in out Decompression_Status);
+	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets;
+						Buffer: in out Octets);
+	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8;
+						Buffer: in out Octets);
 	procedure Decrease_Data_Size_Remaining(Ctx: in out Decompressor;
 							Data_Length: in U64);
 	procedure Output_With_History(Ctx: in out Decompressor;
-			Offset: in Integer; Match_Length: in Integer);
+				Offset: in Integer; Match_Length: in Integer;
+				Buffer: in out Octets);
 
 	type Format is (Legacy, Modern, Skippable);
 
-	type Decompressor(In_Last: Integer; Out_Last: Integer)
-						is tagged limited record
+	type Decompressor(In_Last: Integer) is tagged limited record
 		Is_Format:               Format;
 		Content_Checksum_Length: Integer; -- 0 or 4
 		Block_Checksum_Length:   Integer; -- 0 or 4
 		Is_At_End_Mark:          Boolean;
 		Input_Buffer:            Octets(0 .. In_Last);
-		Output_Buffer:           Octets(0 .. Out_Last);
 		Output_Pos:              Integer;
 		Output_Pos_History:      Integer;
 		Input_Buffer_Filled:     Integer; -- how much data is in there

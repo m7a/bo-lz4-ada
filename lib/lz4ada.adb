@@ -16,44 +16,55 @@ package body LZ4Ada is
 	-- Essentially performs unchecked conversions between the types on
 	-- the assumption that they are just different names for the same
 	-- thing. Use with care.
-	function Init(Input: in Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out Ada.Streams.Stream_Element_Offset)
+	function Init  (Input:           in Ada.Streams.Stream_Element_Array;
+			Num_Consumed:    out Ada.Streams.Stream_Element_Offset;
+			Min_Buffer_Size: out Ada.Streams.Stream_Element_Offset)
 			return Decompressor is
-		Input_Conv: Octets(0 .. Input'Length - 1);
+		Input_Conv:           Octets(0 .. Input'Length - 1);
 		for Input_Conv'Address use Input'Address;
-		Consumed_Conv: Integer;
+		Consumed_Conv:        Integer;
+		Min_Buffer_Size_Conv: Integer;
 	begin
-		return Ret: Decompressor := Init(Input_Conv, Consumed_Conv) do
-			Num_Consumed := Ada.Streams.Stream_Element_Offset(
+		return Ret: Decompressor := Init(Input_Conv, Consumed_Conv,
+						Min_Buffer_Size_Conv) do
+			Num_Consumed    := Ada.Streams.Stream_Element_Offset(
 								Consumed_Conv);
+			Min_Buffer_Size := Ada.Streams.Stream_Element_Offset(
+							Min_Buffer_Size_Conv);
 		end return;
 	end Init;
 
-	function Update(Ctx: in out Decompressor;
-			Input: in Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out Ada.Streams.Stream_Element_Offset;
-			Frame_Has_Ended: out Boolean)
-			return Ada.Streams.Stream_Element_Array is
-		Input_Conv: Octets(0 .. Input'Length - 1);
+	procedure Update(Ctx:          in out Decompressor;
+			 Input:        in Ada.Streams.Stream_Element_Array;
+			 Num_Consumed: out Ada.Streams.Stream_Element_Offset;
+			 Buffer:       in out Ada.Streams.Stream_Element_Array;
+			 Output_First: out Ada.Streams.Stream_Element_Offset;
+			 Output_Last:  out Ada.Streams.Stream_Element_Offset;
+			 Frame_Ended:  out Boolean) is
+		use type Ada.Streams.Stream_Element_Offset;
+		Input_Conv:        Octets(0 .. Input'Length - 1);
 		for Input_Conv'Address use Input'Address;
-		Consumed_Cnv: Integer;
-		Raw: constant Octets := Ctx.Update(Input_Conv, Consumed_Cnv);
-		Result_Conv: Ada.Streams.Stream_Element_Array(
-				Ada.Streams.Stream_Element_Offset(Raw'First) ..
-				Ada.Streams.Stream_Element_Offset(Raw'Last));
-		for Result_Conv'Address use Raw'Address;
+		Buffer_Conv:       Octets(0 .. Buffer'Length - 1);
+		for Buffer_Conv'Address use Buffer'Address;
+		Status:            Decompression_Status;
 	begin
-		Num_Consumed := Ada.Streams.Stream_Element_Offset(Consumed_Cnv);
-		-- TODO HACK NEED TO CHANGE OUTPUT SIGNALIZATION
-		Frame_Has_Ended := (Raw'First = Empty_Frame_Has_Ended'First and
-					Raw'Last = Empty_Frame_Has_Ended'Last);
-		return Result_Conv;
+		Ctx.Update(Input_Conv, Buffer_Conv, Status);
+		Num_Consumed := Ada.Streams.Stream_Element_Offset(
+							Status.Num_Consumed);
+		Output_First := Buffer'First +
+				Ada.Streams.Stream_Element_Offset(Status.First);
+		Output_Last  := Buffer'First +
+				Ada.Streams.Stream_Element_Offset(Status.Last);
+		Frame_Ended  := Status.Frame_Has_Ended;
 	end Update;
 
 	-- Octets based functions --
 
-	function Init(Input: in Octets; Num_Consumed: out Integer)
-							return Decompressor is
+	function Init  (Input:           in Octets;
+			Num_Consumed:    out Integer;
+			Min_Buffer_Size: out Integer)
+			return Decompressor is
+
 		function "*"(Flag: in Boolean; Num: in Integer)
 				return Integer is (if Flag then Num else 0);
 
@@ -90,7 +101,7 @@ package body LZ4Ada is
 			if FLG_Content_Size then
 				Content_Size := Load_64(Input(Cursor ..
 								Cursor + 7));
-				Cursor := Cursor + 8;
+				Cursor       := Cursor + 8;
 			end if;
 
 			-- skip over dictionary ID
@@ -120,6 +131,7 @@ package body LZ4Ada is
 					"Invalid or unsupported magic: 0x" &
 					To_Hex(Magic_NB);
 		end case;
+		Min_Buffer_Size := Block_Max_Size + History_Size;
 		return (
 			Is_Format               => Declared_Format,
 			-- Per spec, the declared size excludes block size +
@@ -127,15 +139,12 @@ package body LZ4Ada is
 			In_Last                 => Block_Max_Size +
 							Block_Checksum_Size +
 							Block_Size_Bytes - 1,
-			Out_Last                => Block_Max_Size +
-							History_Size - 1,
 			Block_Checksum_Length   => Block_Checksum_Size,
 			Content_Checksum_Length => Content_Checksum_Size,
 			Is_At_End_Mark          => False,
 			Input_Buffer            => (others => 0),
 			Input_Buffer_Filled     => 0,
 			Input_Length            => -1,
-			Output_Buffer           => (others => 0),
 			Output_Pos              => 0,
 			Output_Pos_History      => 0,
 			-- No need to set this for skippable, since it is always
@@ -212,64 +221,67 @@ package body LZ4Ada is
 		return Ret;
 	end Load_64;
 
-	function Update(Ctx: in out Decompressor; Input: in Octets;
-				Num_Consumed: out Integer) return Octets is
+	procedure Update(Ctx:    in out Decompressor;
+			 Input:  in Octets;
+			 Buffer: in out Octets;
+			 Status: out Decompression_Status) is
 	begin
-		Num_Consumed := 0;
+		Status.Num_Consumed    := 0;
+		Status.Frame_Has_Ended := False;
+		Status.First           := 1;
+		Status.Last            := 0;
 
 		if Ctx.Is_Format = Skippable then
-			return Ctx.Skip(Input, Num_Consumed);
+			Ctx.Skip(Input, Status);
 		elsif Ctx.Is_At_End_Mark then
-			return Ctx.Check_End_Mark(Input, Num_Consumed);
+			Ctx.Check_End_Mark(Input, Status);
 		elsif Ctx.Input_Length /= -1 then
-			return Ctx.Cache_Data_And_Process_If_Full(Input,
-								Num_Consumed);
-		end if;
-
-		Ctx.Try_Detect_Input_Length(Input, Num_Consumed);
-
-		if Ctx.Is_At_End_Mark then
-			return Ctx.Check_End_Mark(Input, Num_Consumed);
-		elsif Ctx.Input_Length = -1 then
-			return Empty_May_Consume_More;
+			Ctx.Cache_Data_And_Process_If_Full(Input, Buffer,
+									Status);
 		else
-			return Ctx.Handle_Newly_Known_Input_Length(Input,
-								Num_Consumed);
+			Ctx.Try_Detect_Input_Length(Input, Status.Num_Consumed);
+			if Ctx.Is_At_End_Mark then
+				Ctx.Check_End_Mark(Input, Status);
+			elsif Ctx.Input_Length /= -1 then
+				Ctx.Handle_Newly_Known_Input_Length(Input,
+								Buffer, Status);
+			end if;
 		end if;
 	end Update;
 
-	function Skip(Ctx: in out Decompressor; Input: in Octets;
-				Num_Consumed: in out Integer) return Octets is
+	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
+					Status: in out Decompression_Status) is
+		-- TODO z CONVERSION SEEMS PROBLEMATIC / WRONG DIRECTION HERE
 		Remain: constant Integer := Integer(Ctx.Content_Size_Remaining);
 	begin
-		Num_Consumed := Min(Input'Length, Remain);
-		Ctx.Content_Size_Remaining := U64(Remain - Num_Consumed);
-		return (if Ctx.Content_Size_Remaining = 0
-			then Empty_Frame_Has_Ended else Empty_May_Consume_More);
+		Status.Num_Consumed        := Min(Input'Length, Remain);
+		Ctx.Content_Size_Remaining := U64(Remain - Status.Num_Consumed);
+		Status.Frame_Has_Ended     := (Ctx.Content_Size_Remaining = 0);
 	end Skip;
 
-	function Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
-				Num_Consumed: in out Integer) return Octets is
+	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
+					Status: in out Decompression_Status) is
 		Provided_Input_Length: constant Integer :=
-			Input'Length - Num_Consumed;
+			Input'Length - Status.Num_Consumed;
 		Required_Input_Length: constant Integer :=
 			Ctx.Content_Checksum_Length - Ctx.Input_Buffer_Filled;
 	begin
 		if Ctx.Content_Checksum_Length = 0 or
 						Required_Input_Length <= 0 then
-			return Empty_Frame_Has_Ended;
+			Status.Frame_Has_Ended := True;
 		elsif Provided_Input_Length >= Required_Input_Length then
 			declare
 				Checksum: constant U32 := Load_32(
 					Ctx.Input_Buffer(0 ..
 						Ctx.Input_Buffer_Filled - 1) &
-					Input(Num_Consumed .. Num_Consumed +
+					Input(Status.Num_Consumed ..
+						Status.Num_Consumed +
 						Required_Input_Length - 1)
 				);
 				Compare: constant U32 :=
 							Ctx.Hash_All_Data.Final;
 			begin
-				Num_Consumed := Num_Consumed +
+				Status.Num_Consumed := Status.Num_Consumed +
 							Required_Input_Length;
 				if Checksum /= Compare then
 					raise Checksum_Error with
@@ -280,16 +292,17 @@ package body LZ4Ada is
 						To_Hex(Checksum) & ".";
 				end if;
 			end;
-			return Empty_Frame_Has_Ended;
+			Status.Frame_Has_Ended := True;
 		else
 			Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
 					Ctx.Input_Buffer_Filled +
 					Provided_Input_Length - 1) :=
-				Input(Input'First + Num_Consumed .. Input'Last);
+				Input(Input'First + Status.Num_Consumed ..
+					Input'Last);
 			Ctx.Input_Buffer_Filled := Ctx.Input_Buffer_Filled +
 							Provided_Input_Length;
-			Num_Consumed := Num_Consumed + Provided_Input_Length;
-			return Empty_May_Consume_More;
+			Status.Num_Consumed := Status.Num_Consumed +
+							Provided_Input_Length;
 		end if;
 	end Check_End_Mark;
 
@@ -351,28 +364,28 @@ package body LZ4Ada is
 		end if;
 	end Try_Detect_Input_Length;
 
-	function Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
-			Input: in Octets; Num_Consumed: in out Integer)
-			return Octets is
+	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
+				Input: in Octets; Buffer: in out Octets;
+				Status: in out Decompression_Status) is
 		Total_Length: constant Integer :=
 				Ctx.Input_Length + Ctx.Block_Checksum_Length;
 	begin
-		if (Input'Length - Num_Consumed) >= Total_Length then
+		if (Input'Length - Status.Num_Consumed) >= Total_Length then
 			-- Supplied input is large enough to process right away
 			-- => no copying
 			declare
-				Use_Input: constant Octets :=
-					Input(Input'First + Num_Consumed ..
-						Input'First + Num_Consumed +
-							Total_Length - 1);
+				Offset:    constant Integer := Input'First +
+						Status.Num_Consumed;
+				Use_Input: constant Octets  := Input(Offset ..
+						Offset + Total_Length - 1);
 			begin
-				Num_Consumed := Num_Consumed +
+				Status.Num_Consumed := Status.Num_Consumed +
 						Ctx.Input_Length +
 						Ctx.Block_Checksum_Length;
 				Ctx.Input_Buffer_Filled := 0;
 				Ctx.Input_Length        := -1;
-				return Ctx.Decode_Full_Block_With_Trailer(
-								Use_Input);
+				Ctx.Decode_Full_Block_With_Trailer(Use_Input,
+							Buffer, Status);
 			end;
 			-- if output has entire block of free space consider
 			-- re-running. optionally: else consider reading ahead
@@ -381,44 +394,45 @@ package body LZ4Ada is
 			-- in any meaningful way and callers need to do an
 			-- outer loop anyways?
 		else
-			return Ctx.Cache_Data_And_Process_If_Full(Input,
-								Num_Consumed);
+			Ctx.Cache_Data_And_Process_If_Full(Input, Buffer,
+									Status);
 		end if;
 	end Handle_Newly_Known_Input_Length;
 
-	function Cache_Data_And_Process_If_Full(Ctx: in out Decompressor;
-			Input: in Octets; Num_Consumed: in out Integer)
-			return Octets is
-		Input_Avail: constant Integer := Input'Length - Num_Consumed;
-		Input_Want: constant Integer := Ctx.Input_Length +
+	procedure Cache_Data_And_Process_If_Full(Ctx: in out Decompressor;
+				Input: in Octets; Buffer: in out Octets;
+				Status: in out Decompression_Status) is
+		Avail:  constant Integer := Input'Length - Status.Num_Consumed;
+		Want:   constant Integer := Ctx.Input_Length +
 						Ctx.Block_Checksum_Length -
 						Ctx.Input_Buffer_Filled +
 						Block_Size_Bytes;
-		Input_Fill: constant Integer := Ctx.Input_Buffer_Filled;
+		Fill:   constant Integer := Ctx.Input_Buffer_Filled;
+		Offset: constant Integer := Input'First + Status.Num_Consumed;
 	begin
-		if Input_Want > Input_Avail then
-			Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
-				Ctx.Input_Buffer_Filled + Input_Avail - 1) :=
-				Input(Input'First + Num_Consumed .. Input'Last);
+		if Want > Avail then
+			Ctx.Input_Buffer(Fill .. Fill + Avail - 1)
+						:= Input(Offset .. Input'Last);
 			Ctx.Input_Buffer_Filled := Ctx.Input_Buffer_Filled +
-				Input_Avail;
-			Num_Consumed := Num_Consumed + Input_Avail;
-			return Empty_May_Consume_More;
+									Avail;
+			Status.Num_Consumed     := Status.Num_Consumed + Avail;
 		else
-			Num_Consumed := Num_Consumed + Input_Want;
+			Status.Num_Consumed     := Status.Num_Consumed + Want;
 			Ctx.Input_Buffer_Filled := 0;
 			Ctx.Input_Length        := -1;
-			return Ctx.Decode_Full_Block_With_Trailer(
-				Ctx.Input_Buffer(Block_Size_Bytes ..
-						Input_Fill - 1) &
-				Input(Input'First + Num_Consumed - Input_Want ..
-						Input'First + Num_Consumed - 1)
+			Ctx.Decode_Full_Block_With_Trailer(
+				Ctx.Input_Buffer(Block_Size_Bytes .. Fill - 1) &
+				Input(Offset .. Offset + Want - 1),
+				Buffer, Status
 			);
 		end if;
 	end Cache_Data_And_Process_If_Full;
 
-	function Decode_Full_Block_With_Trailer(Ctx: in out Decompressor;
-			Input_Block: in Octets) return Octets is
+	procedure Decode_Full_Block_With_Trailer(
+				Ctx:         in out Decompressor;
+				Input_Block: in Octets;
+				Buffer:      in out Octets;
+				Status:      in out Decompression_Status) is
 		Raw_Data: constant Octets := Input_Block(Input_Block'First ..
 				Input_Block'Last - Ctx.Block_Checksum_Length);
 	begin
@@ -433,13 +447,14 @@ package body LZ4Ada is
 		end if;
 
 		if Ctx.Is_Compressed then
-			return Ctx.Decompress_Full_Block(Raw_Data);
+			Ctx.Decompress_Full_Block(Raw_Data, Buffer, Status);
 		else
-			Ctx.Write_Output(Raw_Data);
+			Ctx.Write_Output(Raw_Data, Buffer);
 			if Ctx.Output_Pos >= History_Size then
 				Ctx.Output_Pos_History := Ctx.Output_Pos;
 			end if;
-			return Raw_Data;
+			Status.First := Ctx.Output_Pos - Raw_Data'Length;
+			Status.Last  := Ctx.Output_Pos - 1;
 		end if;
 	end Decode_Full_Block_With_Trailer;
 
@@ -454,10 +469,12 @@ package body LZ4Ada is
 		end if;
 	end Check_Checksum;
 
-	function Decompress_Full_Block(Ctx: in out Decompressor;
-					Raw_Data: in Octets) return Octets is
-		Out_First: constant Integer := Ctx.Output_Pos;
-		Idx:       Integer          := Raw_Data'First;
+	procedure Decompress_Full_Block(Ctx:    in out Decompressor;
+					Raw_Data: in Octets;
+					Buffer: in out Octets;
+					Status: in out Decompression_Status) is
+
+		Idx: Integer := Raw_Data'First;
 
 		procedure Process_Variable_Length(Var: in out Integer) is
 			Tmp: U8;
@@ -484,7 +501,7 @@ package body LZ4Ada is
 			Process_Variable_Length(Num_Literals);
 			if Num_Literals > 0 then
 				Ctx.Write_Output(Raw_Data(Idx ..
-						Idx + Num_Literals - 1));
+					Idx + Num_Literals - 1), Buffer);
 				Idx := Idx + Num_Literals;
 			end if;
 			if Idx > Raw_Data'Last then
@@ -510,30 +527,34 @@ package body LZ4Ada is
 			end if;
 			Process_Variable_Length(Match_Length);
 			-- +4 for minmatch
-			Ctx.Output_With_History(Offset, Match_Length + 4);
+			Ctx.Output_With_History(Offset, Match_Length + 4,
+									Buffer);
 		end Decompress_Sequence;
 	begin
+		Status.First := Ctx.Output_Pos;
 		while Idx <= Raw_Data'Last loop -- and not Has_Reached_End loop
 			Decompress_Sequence;
 		end loop;
+		Status.Last := Ctx.Output_Pos - 1;
 		if Ctx.Output_Pos >= History_Size then
 			Ctx.Output_Pos_History := Ctx.Output_Pos;
 		end if;
-		return Ctx.Output_Buffer(Out_First .. Ctx.Output_Pos - 1);
 	end Decompress_Full_Block;
 
-	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets) is
+	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets;
+						Buffer: in out Octets) is
 	begin
 		for I in Data'Range loop
-			Ctx.Write_Output_Single(Data(I));
+			Ctx.Write_Output_Single(Data(I), Buffer);
 		end loop;
 		Ctx.Decrease_Data_Size_Remaining(Data'Length);
 	end Write_Output;
 
-	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8) is
+	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8;
+						Buffer: in out Octets) is
 	begin
-		Ctx.Output_Buffer(Ctx.Output_Pos) := Data;
-		Ctx.Output_Pos := Ctx.Output_Pos + 1;
+		Buffer(Ctx.Output_Pos) := Data;
+		Ctx.Output_Pos         := Ctx.Output_Pos + 1;
 		if Ctx.Content_Checksum_Length /= 0 then
 			Ctx.Hash_All_Data.Update1(Data);
 		end if;
@@ -555,9 +576,10 @@ package body LZ4Ada is
 	end Decrease_Data_Size_Remaining;
 
 	procedure Output_With_History(Ctx: in out Decompressor;
-			Offset: in Integer; Match_Length: in Integer) is
+				Offset: in Integer; Match_Length: in Integer;
+				Buffer: in out Octets) is
 		Start_Output_Pos: constant Integer := Ctx.Output_Pos;
-		Src_Loc: Integer;
+		Src_Loc:          Integer;
 	begin
 		for I in 0 .. (Match_Length - 1) loop
 			Src_Loc := Start_Output_Pos - Offset + I;
@@ -572,7 +594,7 @@ package body LZ4Ada is
 					" not possible (earliest available " &
 					"index is 0).";
 			end if;
-			Ctx.Write_Output_Single(Ctx.Output_Buffer(Src_Loc));
+			Ctx.Write_Output_Single(Buffer(Src_Loc), Buffer);
 		end loop;
 		Ctx.Decrease_Data_Size_Remaining(U64(Match_Length));
 	end Output_With_History;

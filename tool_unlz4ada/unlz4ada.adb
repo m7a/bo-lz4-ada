@@ -17,20 +17,21 @@ procedure UnLZ4Ada is
 	End_Of_Frame:   Boolean;
 	Total_Consumed: Stream_Element_Offset;
 
-	procedure Process_Inner(Ctx: in out LZ4Ada.Decompressor) is
-		Produced: constant Stream_Element_Array := Ctx.Update(Buf_Input(
-			Total_Consumed .. Last), Consumed, End_Of_Frame);
+	procedure Process_Inner(Ctx: in out LZ4Ada.Decompressor;
+				Buf: in out Stream_Element_Array) is
+		Result_First: Stream_Element_Offset;
+		Result_Last:  Stream_Element_Offset;
 	begin
+		Ctx.Update(Buf_Input(Total_Consumed .. Last), Consumed,
+				Buf, Result_First, Result_Last, End_Of_Frame);
 		Total_Consumed := Total_Consumed + Consumed;
 
-		-- Loop over input until something produced.
-		-- When something was produced output it to free
-		-- up the buffer since the contract of Update requires
-		-- us to provide at least the minimum output buffer
-		-- size of free space upon each invocation.
+		-- Loop over input until something produced. When something was
+		-- produced output it to free up the buffer since next call
+		-- might overwrite its contents.
 		if End_Of_Frame or Total_Consumed > Last or
-							Produced'Length > 0 then
-			Write(Stdout.all, Produced);
+					(Result_Last - Result_First) >= 0 then
+			Write(Stdout.all, Buf(Result_First .. Result_Last));
 
 			-- Prefer to rely on detected end of frame conditions.
 			-- When EOF occurs (Last < 0) but no end of frame
@@ -56,11 +57,14 @@ begin
 		end if;
 		End_Of_Frame := False;
 		declare
+			Required_Buffer_Size: Stream_Element_Offset;
 			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
-					Buf_Input(0 .. Last), Total_Consumed);
+					Buf_Input(0 .. Last), Total_Consumed,
+					Required_Buffer_Size);
+			Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
 		begin
 			while not End_Of_Frame loop
-				Process_Inner(Ctx);
+				Process_Inner(Ctx, Buf);
 			end loop;
 		end;
 	end loop;
