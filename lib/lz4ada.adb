@@ -1,13 +1,6 @@
 with Ada.Assertions;
 
---with Ada.Text_IO; -- local use TODO DEBUG ONLY
-
--- TODO SHOULD MAKE USE OF THE FOLLWING
---  -> add a query function for end of frame (or add out param to update)
---  -> make the buffer an in out parameter everywhere with a function to query
---     how large it should be allocated (externally!). This will permit a
---     "copyless" design. API will then output a range of values to read.
---     from the buffer.
+-- with Ada.Text_IO; -- local use TODO DEBUG ONLY
 
 package body LZ4Ada is
 
@@ -473,10 +466,6 @@ package body LZ4Ada is
 		end if;
 	end Check_Checksum;
 
-	-- TODO HERE AND BELOW IS THE "OPTIMZATION SPACE" WHERE IMPROVEMENTS
-	--      SHOULD BE MADE TO COME CLOSER FROM THE CURRENT 170 MiB/s to
-	--      THE REFERENCE IMPLEMENTATIONS 800 something MiB/s.
-
 	procedure Decompress_Full_Block(Ctx:    in out Decompressor;
 					Raw_Data: in Octets;
 					Buffer: in out Octets;
@@ -577,17 +566,19 @@ package body LZ4Ada is
 			end;
 		end if;
 
-		-- TODO MIGHT IT BE POSSIBLE TO OPTIMIZE THE UPDATE ROUTINE
-		--      FOR MULTIPLES OF 8, TOO? WOULD REQUIRE US TO HAVE
-		--      A MEANS OF SPECIFYING HWO MUCH OF THE SUPPLIED DATA
-		--      WE ACTUALLY WANT TO CHECKSUM. PURSUE ONLY AFTER ZEROES
-		--      OPTIMIZATION...
+		Cursor_Out     := Ctx.Output_Pos;
+		Ctx.Output_Pos := Ctx.Output_Pos + Num_El;
+
 		if Ctx.Content_Checksum_Length /= 0 then
-			Ctx.Hash_All_Data.Update(Buffer(Ctx.Output_Pos ..
-						Ctx.Output_Pos + Last - First));
+			while Cursor_Out < Ctx.Output_Pos loop
+				Ctx.Hash_All_Data.Update8L(
+					Buffer(Cursor_Out .. Cursor_Out + 7),
+					Min(8, Ctx.Output_Pos - Cursor_Out)
+				);
+				Cursor_Out := Cursor_Out + 8;
+			end loop;
 		end if;
 
-		Ctx.Output_Pos := Ctx.Output_Pos + Num_El;
 		Ctx.Decrease_Data_Size_Remaining(U64(Num_El));
 	end Write_Output;
 
@@ -622,7 +613,8 @@ package body LZ4Ada is
 		Start_Output_Pos: constant Integer := Ctx.Output_Pos;
 		Src_Loc:          Integer;
 	begin
-		-- TODO OPTIMIZE THIS ROUTINE FOR BETTER ZEROES PERFORMANCE!
+		-- TODO CSTAT OPTIMIZE THIS ROUTINE FOR BETTER ZEROES PERFORMANCE!
+		-- Idea would be: If Start_Output_Pos + Match_Length - 1 (optional + Ctx.Output_Pos_History) mod ... > Output_Pos then we have some repeated characters at the end. Before processing them process all the non-repeated characters with as much overcopy as possible (is it safe to overwrite the begin of history? maybe yes?)
 		for I in 0 .. (Match_Length - 1) loop
 			Src_Loc := Start_Output_Pos - Offset + I;
 			if Src_Loc < 0 then
@@ -671,6 +663,26 @@ package body LZ4Ada is
 				Ctx.Process(Ctx.Buffer);
 			end if;
 		end Update1;
+
+		procedure Update8L(Ctx: in out Hasher; Input: in Octets;
+						Num_To_Process: in Integer) is
+		begin
+			Ctx.Buffer(Ctx.Buffer_Size ..
+						Ctx.Buffer_Size + 7) := Input;
+			Ctx.Total_Length := Ctx.Total_Length +
+						U64(Num_To_Process);
+			Ctx.Buffer_Size := Ctx.Buffer_Size + Num_To_Process;
+			if Ctx.Buffer_Size >= Max_Buffer_Size then
+				Ctx.Buffer_Size := Ctx.Buffer_Size -
+							Max_Buffer_Size;
+				Ctx.Process(Ctx.Buffer);
+				if Ctx.Buffer_Size > 0 then
+					Ctx.Buffer(0 .. 7) :=
+						Ctx.Buffer(Max_Buffer_Size ..
+							Max_Buffer_Size + 7);
+				end if;
+			end if;
+		end Update8L;
 
 		procedure Process(Ctx: in out Hasher; Data: in Octets) is
 			B: Array(0..3) of U32;

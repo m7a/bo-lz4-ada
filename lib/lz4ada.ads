@@ -120,6 +120,9 @@ package LZ4Ada is
 		function  Init(Seed: in U32) return Hasher;
 		procedure Update(Ctx: in out Hasher; Input: in Octets);
 		procedure Update1(Ctx: in out Hasher; Input: in U8);
+		procedure Update8L(Ctx: in out Hasher; Input: in Octets;
+			Num_To_Process: in Integer)
+			with Pre => (Input'Length = 8 and Num_To_Process <= 8);
 		function  Final(Ctx: in Hasher) return U32;
 		function  Hash(Input: in Octets) return U32; -- One-Stop Call
 	private
@@ -131,7 +134,7 @@ package LZ4Ada is
 		Max_Buffer_Size: constant Integer := 16;
 
 		procedure Process(Ctx: in out Hasher; Data: in Octets)
-						with Pre => Data'Length = 16;
+						with Pre => Data'Length >= 16;
 
 		type Hasher is tagged limited record
 			-- No need to do an array if we always access by
@@ -140,7 +143,8 @@ package LZ4Ada is
 			State_1:      U32;
 			State_2:      U32;
 			State_3:      U32;
-			Buffer:       Octets(0 .. Max_Buffer_Size - 1);
+			-- 8 buffer to take extra input!
+			Buffer:       Octets(0 .. Max_Buffer_Size + 8 - 1);
 			Buffer_Size:  Integer;
 			Total_Length: U64;
 		end record;
