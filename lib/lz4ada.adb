@@ -131,7 +131,8 @@ package body LZ4Ada is
 					"Invalid or unsupported magic: 0x" &
 					To_Hex(Magic_NB);
 		end case;
-		Min_Buffer_Size := Block_Max_Size + History_Size;
+		-- +8 for overcopy optimization
+		Min_Buffer_Size := Block_Max_Size + History_Size + 8;
 		return (
 			Is_Format               => Declared_Format,
 			-- Per spec, the declared size excludes block size +
@@ -433,8 +434,10 @@ package body LZ4Ada is
 				Input_Block: in Octets;
 				Buffer:      in out Octets;
 				Status:      in out Decompression_Status) is
-		Raw_Data: constant Octets := Input_Block(Input_Block'First ..
-				Input_Block'Last - Ctx.Block_Checksum_Length);
+		Last:     constant Integer := Input_Block'Last -
+						Ctx.Block_Checksum_Length;
+		Raw_Data: constant Octets   := Input_Block(Input_Block'First ..
+									Last);
 	begin
 		if Ctx.Block_Checksum_Length > 0 then
 			Check_Checksum(Raw_Data, Load_32(Input_Block(
@@ -449,7 +452,8 @@ package body LZ4Ada is
 		if Ctx.Is_Compressed then
 			Ctx.Decompress_Full_Block(Raw_Data, Buffer, Status);
 		else
-			Ctx.Write_Output(Raw_Data, Buffer);
+			Ctx.Write_Output(Input_Block, Input_Block'First, Last,
+									Buffer);
 			if Ctx.Output_Pos >= History_Size then
 				Ctx.Output_Pos_History := Ctx.Output_Pos;
 			end if;
@@ -468,6 +472,10 @@ package body LZ4Ada is
 				To_Hex(Compute_Checksum) & ".";
 		end if;
 	end Check_Checksum;
+
+	-- TODO HERE AND BELOW IS THE "OPTIMZATION SPACE" WHERE IMPROVEMENTS
+	--      SHOULD BE MADE TO COME CLOSER FROM THE CURRENT 170 MiB/s to
+	--      THE REFERENCE IMPLEMENTATIONS 800 something MiB/s.
 
 	procedure Decompress_Full_Block(Ctx:    in out Decompressor;
 					Raw_Data: in Octets;
@@ -500,8 +508,8 @@ package body LZ4Ada is
 			-- Literals
 			Process_Variable_Length(Num_Literals);
 			if Num_Literals > 0 then
-				Ctx.Write_Output(Raw_Data(Idx ..
-					Idx + Num_Literals - 1), Buffer);
+				Ctx.Write_Output(Raw_Data, Idx, Idx +
+						Num_Literals - 1, Buffer);
 				Idx := Idx + Num_Literals;
 			end if;
 			if Idx > Raw_Data'Last then
@@ -542,12 +550,45 @@ package body LZ4Ada is
 	end Decompress_Full_Block;
 
 	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets;
-						Buffer: in out Octets) is
+					First: in Integer; Last: in Integer;
+					Buffer: in out Octets) is
+		Num_El:     constant Integer := Last - First + 1;
+		Cursor_Out:          Integer := Ctx.Output_Pos;
+		Cursor_In:           Integer := First;
 	begin
-		for I in Data'Range loop
-			Ctx.Write_Output_Single(Data(I), Buffer);
+		-- "Wild copy" optimization.
+		-- Prefer to copy multiples of 8 bytes, then fix up the issues
+		-- afterwards. When we want to copy 3 bytes, it is more
+		-- efficient to copy 8 at once rather than 3 explicitly.
+		while (Data'Last - Cursor_In + 1) >= 8 and
+							Cursor_In <= Last loop
+			Buffer(Cursor_Out .. Cursor_Out + 7) :=
+					Data(Cursor_In .. Cursor_In + 7);
+			Cursor_Out := Cursor_Out + 8;
+			Cursor_In  := Cursor_In  + 8;
 		end loop;
-		Ctx.Decrease_Data_Size_Remaining(Data'Length);
+
+		if Cursor_In <= Last then
+			declare 
+				Remainder: constant Integer := Last - Cursor_In;
+			begin
+				Buffer(Cursor_Out .. Cursor_Out + Remainder) :=
+							Data(Cursor_In .. Last);
+			end;
+		end if;
+
+		-- TODO MIGHT IT BE POSSIBLE TO OPTIMIZE THE UPDATE ROUTINE
+		--      FOR MULTIPLES OF 8, TOO? WOULD REQUIRE US TO HAVE
+		--      A MEANS OF SPECIFYING HWO MUCH OF THE SUPPLIED DATA
+		--      WE ACTUALLY WANT TO CHECKSUM. PURSUE ONLY AFTER ZEROES
+		--      OPTIMIZATION...
+		if Ctx.Content_Checksum_Length /= 0 then
+			Ctx.Hash_All_Data.Update(Buffer(Ctx.Output_Pos ..
+						Ctx.Output_Pos + Last - First));
+		end if;
+
+		Ctx.Output_Pos := Ctx.Output_Pos + Num_El;
+		Ctx.Decrease_Data_Size_Remaining(U64(Num_El));
 	end Write_Output;
 
 	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8;
@@ -581,6 +622,7 @@ package body LZ4Ada is
 		Start_Output_Pos: constant Integer := Ctx.Output_Pos;
 		Src_Loc:          Integer;
 	begin
+		-- TODO OPTIMIZE THIS ROUTINE FOR BETTER ZEROES PERFORMANCE!
 		for I in 0 .. (Match_Length - 1) loop
 			Src_Loc := Start_Output_Pos - Offset + I;
 			if Src_Loc < 0 then

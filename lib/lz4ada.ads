@@ -189,7 +189,8 @@ private
 					Buffer: in out Octets;
 					Status: in out Decompression_Status);
 	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets;
-						Buffer: in out Octets);
+					First: in Integer; Last: in Integer;
+					Buffer: in out Octets);
 	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8;
 						Buffer: in out Octets);
 	procedure Decrease_Data_Size_Remaining(Ctx: in out Decompressor;
