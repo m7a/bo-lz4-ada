@@ -1,6 +1,6 @@
 with Ada.Assertions;
 
--- with Ada.Text_IO; -- local use TODO DEBUG ONLY
+--with Ada.Text_IO; -- local use TODO DEBUG ONLY
 
 package body LZ4Ada is
 
@@ -445,6 +445,7 @@ package body LZ4Ada is
 		if Ctx.Is_Compressed then
 			Ctx.Decompress_Full_Block(Raw_Data, Buffer, Status);
 		else
+			--Ada.Text_IO.Put_Line("WRITE 0 - UNCOMPRESSED");
 			Ctx.Write_Output(Input_Block, Input_Block'First, Last,
 									Buffer);
 			if Ctx.Output_Pos >= History_Size then
@@ -497,6 +498,7 @@ package body LZ4Ada is
 			-- Literals
 			Process_Variable_Length(Num_Literals);
 			if Num_Literals > 0 then
+				--Ada.Text_IO.Put_Line("WRITE 0 - LITERALS");
 				Ctx.Write_Output(Raw_Data, Idx, Idx +
 						Num_Literals - 1, Buffer);
 				Idx := Idx + Num_Literals;
@@ -582,16 +584,6 @@ package body LZ4Ada is
 		Ctx.Decrease_Data_Size_Remaining(U64(Num_El));
 	end Write_Output;
 
-	procedure Write_Output_Single(Ctx: in out Decompressor; Data: in U8;
-						Buffer: in out Octets) is
-	begin
-		Buffer(Ctx.Output_Pos) := Data;
-		Ctx.Output_Pos         := Ctx.Output_Pos + 1;
-		if Ctx.Content_Checksum_Length /= 0 then
-			Ctx.Hash_All_Data.Update1(Data);
-		end if;
-	end Write_Output_Single;
-
 	procedure Decrease_Data_Size_Remaining(Ctx: in out Decompressor;
 							Data_Length: in U64) is
 	begin
@@ -610,27 +602,63 @@ package body LZ4Ada is
 	procedure Output_With_History(Ctx: in out Decompressor;
 				Offset: in Integer; Match_Length: in Integer;
 				Buffer: in out Octets) is
-		Start_Output_Pos: constant Integer := Ctx.Output_Pos;
-		Src_Loc:          Integer;
+		Remaining_Match: Integer := Match_Length;
+
+		Raw_Offset: constant Integer := Ctx.Output_Pos - Offset;
+
+		H_Offset: Integer;
+		H_Length: Integer;
+
+		I_Offset: Integer;
+		I_Length: Integer;
+
+		R_Start_Idx: Integer;
+		R_Length:    Integer;
+		R_Processed: Integer := 0;
 	begin
-		-- TODO CSTAT OPTIMIZE THIS ROUTINE FOR BETTER ZEROES PERFORMANCE!
-		-- Idea would be: If Start_Output_Pos + Match_Length - 1 (optional + Ctx.Output_Pos_History) mod ... > Output_Pos then we have some repeated characters at the end. Before processing them process all the non-repeated characters with as much overcopy as possible (is it safe to overwrite the begin of history? maybe yes?)
-		for I in 0 .. (Match_Length - 1) loop
-			Src_Loc := Start_Output_Pos - Offset + I;
-			if Src_Loc < 0 then
-				Src_Loc := Src_Loc + Ctx.Output_Pos_History;
-			end if;
-			if Src_Loc < 0 then
+		if Raw_Offset >= 0 then
+			-- Start with intermediate part right away
+			I_Offset := Raw_Offset;
+			I_Length := Min(Match_Length, Offset);
+		else
+			-- Have some part to replay from history
+			H_Offset := Raw_Offset + Ctx.Output_Pos_History;
+			H_Length := Min(Match_Length, Offset - Ctx.Output_Pos);
+			if H_Offset < 0 then
 				raise Data_Corruption with
 					"Backreference location out of range." &
 					" Read from offset " &
-					Integer'Image(Src_Loc) &
+					Integer'Image(H_Offset) &
 					" not possible (earliest available " &
 					"index is 0).";
 			end if;
-			Ctx.Write_Output_Single(Buffer(Src_Loc), Buffer);
-		end loop;
-		Ctx.Decrease_Data_Size_Remaining(U64(Match_Length));
+			if H_Length > 0 then
+				Ctx.Write_Output(Buffer, H_Offset,
+					H_Offset + H_Length - 1, Buffer);
+				Remaining_Match := Match_Length - H_Length;
+			end if;
+			I_Offset := 0;
+			I_Length := Min(Remaining_Match, Ctx.Output_Pos);
+		end if;
+
+		-- Intermediate Part
+		if I_Length > 0 then
+			Ctx.Write_Output(Buffer, I_Offset,
+					I_Offset + I_Length - 1, Buffer);
+			Remaining_Match := Remaining_Match - I_Length;
+		end if;
+
+		-- Have Repeating part to handle
+		if Remaining_Match > 0 then
+			R_Start_Idx := Ctx.Output_Pos - Offset;
+			while R_Processed < Remaining_Match loop
+				R_Length := Min(Ctx.Output_Pos - R_Start_Idx,
+						Remaining_Match - R_Processed);
+				Ctx.Write_Output(Buffer, R_Start_Idx,
+					R_Start_Idx + R_Length - 1, Buffer);
+				R_Processed := R_Processed + R_Length;
+			end loop;
+		end if;
 	end Output_With_History;
 
 	package body XXHash32 is
