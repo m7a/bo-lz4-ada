@@ -248,7 +248,7 @@ package body LZ4Ada is
 		-- TODO z CONVERSION SEEMS PROBLEMATIC / WRONG DIRECTION HERE
 		Remain: constant Integer := Integer(Ctx.Content_Size_Remaining);
 	begin
-		Status.Num_Consumed        := Min(Input'Length, Remain);
+		Status.Num_Consumed        := Integer'Min(Input'Length, Remain);
 		Ctx.Content_Size_Remaining := U64(Remain - Status.Num_Consumed);
 		Status.Frame_Has_Ended     := (Ctx.Content_Size_Remaining = 0);
 	end Skip;
@@ -306,8 +306,8 @@ package body LZ4Ada is
 				Block_Size_Bytes + Ctx.Block_Checksum_Length;
 		Length_Word: U32;
 	begin
-		Num_Consumed := Min(Block_Size_Bytes - Ctx.Input_Buffer_Filled,
-					Input'Length);
+		Num_Consumed := Integer'Min(Block_Size_Bytes -
+					Ctx.Input_Buffer_Filled, Input'Length);
 		Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
 			Ctx.Input_Buffer_Filled + Num_Consumed - 1) :=
 			Input(Input'First .. Input'First + Num_Consumed - 1);
@@ -575,7 +575,8 @@ package body LZ4Ada is
 			while Cursor_Out < Ctx.Output_Pos loop
 				Ctx.Hash_All_Data.Update8L(
 					Buffer(Cursor_Out .. Cursor_Out + 7),
-					Min(8, Ctx.Output_Pos - Cursor_Out)
+					Integer'Min(8,
+						Ctx.Output_Pos - Cursor_Out)
 				);
 				Cursor_Out := Cursor_Out + 8;
 			end loop;
@@ -619,11 +620,12 @@ package body LZ4Ada is
 		if Raw_Offset >= 0 then
 			-- Start with intermediate part right away
 			I_Offset := Raw_Offset;
-			I_Length := Min(Match_Length, Offset);
+			I_Length := Integer'Min(Match_Length, Offset);
 		else
 			-- Have some part to replay from history
 			H_Offset := Raw_Offset + Ctx.Output_Pos_History;
-			H_Length := Min(Match_Length, Offset - Ctx.Output_Pos);
+			H_Length := Integer'Min(Match_Length,
+						Offset - Ctx.Output_Pos);
 			if H_Offset < 0 then
 				raise Data_Corruption with
 					"Backreference location out of range." &
@@ -638,7 +640,8 @@ package body LZ4Ada is
 				Remaining_Match := Match_Length - H_Length;
 			end if;
 			I_Offset := 0;
-			I_Length := Min(Remaining_Match, Ctx.Output_Pos);
+			I_Length := Integer'Min(Remaining_Match,
+								Ctx.Output_Pos);
 		end if;
 
 		-- Intermediate Part
@@ -652,7 +655,8 @@ package body LZ4Ada is
 		if Remaining_Match > 0 then
 			R_Start_Idx := Ctx.Output_Pos - Offset;
 			while R_Processed < Remaining_Match loop
-				R_Length := Min(Ctx.Output_Pos - R_Start_Idx,
+				R_Length := Integer'Min(Ctx.Output_Pos -
+						R_Start_Idx,
 						Remaining_Match - R_Processed);
 				Ctx.Write_Output(Buffer, R_Start_Idx,
 					R_Start_Idx + R_Length - 1, Buffer);
@@ -675,10 +679,20 @@ package body LZ4Ada is
 		end Init;
 
 		procedure Update(Ctx: in out Hasher; Input: in Octets) is
+			Has_Proc: Integer := 0;
 		begin
-			for I in Input'Range loop
-				Ctx.Update1(Input(I));
+			-- TODO z PERFORMANCE GAIN SEEMS DUBIOUS HERE
+			while Has_Proc < (Input'Length - 8) loop
+				Ctx.Update8L(Input(Input'First + Has_Proc ..
+						Input'First + Has_Proc + 7), 8);
+				Has_Proc := Has_Proc + 8;
 			end loop;
+			for I in 0 .. (Input'Length - Has_Proc - 1) loop
+				Ctx.Update1(Input(Input'First + Has_Proc + I));
+			end loop;
+			--for I in Input'Range loop
+			--	Ctx.Update1(Input(I));
+			--end loop;
 		end Update;
 
 		procedure Update1(Ctx: in out Hasher; Input: in U8) is
@@ -756,9 +770,7 @@ package body LZ4Ada is
 		function Hash(Input: in Octets) return U32 is
 			Ctx: Hasher := Init;
 		begin
-			for I in Input'Range loop
-				Ctx.Update1(Input(I));
-			end loop;
+			Ctx.Update(Input);
 			return Ctx.Final;
 		end Hash;
 

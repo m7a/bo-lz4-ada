@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project default="build">
+
+<!-- APPLICATION METADATA -->
+<property name="mdpc.name"      value="liblz4-ada-dev"/>
+<property name="mdpc.section"   value="libdevel"/>
+<!-- currently restricted due to install path x86_64-linux-gnu -->
+<property name="mdpc.arch"      value="amd64"/>
+<property name="mdpc.descrs"    value="LZ4 Decompression Library implemented in Ada"/>
+<property name="mdpc.descrl">
+ WORK IN PROGRESS
+</property>
+
+<property name="mdpc.file.install">
+lib/liblz4ada.so /usr/lib/x86_64-linux-gnu
+lib/lz4ada.ali /usr/lib/x86_64-linux-gnu/ada/adalib/lz4
+lib/lz4ada.ads /usr/share/ada/adainclude/lz4
+tool_unlz4ada/unlz4ada /usr/bin
+tool_xxhash32ada/xxhash32ada /usr/bin
+</property>
+
+<!-- CI INTEGRATION -->
+<target name="package_triggered" depends="package">
+	<property name="masysma.ci.trigger" value="newver"/>
+</target>
+
+<!-- CONSTANT TPL IMPORT -->
+<property environment="env"/>
+<condition property="masysma.internal.includepath.rel" value="${env.MDVL_CI_PHOENIX_ROOT}" else=".."><isset property="env.MDVL_CI_PHOENIX_ROOT"/></condition>
+<property name="masysma.internal.includepath" location="${masysma.internal.includepath.rel}"/>
+<property name="masysma.internal.loadpath" value="${masysma.internal.includepath}/co-build/ant-build-template.xml"/>
+<condition property="masysma.internal.load" value="file://${masysma.internal.loadpath}" else="https://raw.githubusercontent.com/m7a/co-build/master/ant-build-template.xml"><resourceexists><file file="${masysma.internal.loadpath}"/></resourceexists></condition>
+<import><url url="${masysma.internal.load}"/></import>
+
+</project>

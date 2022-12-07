@@ -174,8 +174,8 @@ private
 	--        implementation code.
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer)
-			with pre => Ctx.Input_Buffer_Filled < Block_Size_Bytes
-					and Num_Consumed = 0;
+			with Pre => (Ctx.Input_Buffer_Filled < Block_Size_Bytes
+					and Num_Consumed = 0);
 	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
 				Input: in Octets; Buffer: in out Octets;
 				Status: in out Decompression_Status);
@@ -225,10 +225,5 @@ private
 				Shift_Left(U32(Src(Src'First + 2)), 16) or
 				Shift_Left(U32(Src(Src'First + 3)), 24))
 				with Pre => (Src'Length = 4);
-
-	function Min(A, B: in Integer) return Integer is
-						(if A < B then A else B);
-	function Max(A, B: in Integer) return Integer is
-						(if A > B then A else B);
 
 end LZ4Ada;

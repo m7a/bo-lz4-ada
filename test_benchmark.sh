@@ -1,5 +1,10 @@
 #!/bin/sh -eu
 
+# To compare with reference implementation
+# LD_LIBRARY_PATH=lib tool_unlz4ada/unlz4ada < ~/wd/silesia.tar.lz4 | dd bs=1M of=/dev/null
+# Here, my implementation achieves around 200 MiB/s vs.
+# Debian's unlz4 has 830 MiB/s
+
 if ! [ -f /tmp/zeroes.bin ]; then
 	dd if=/dev/zero of=/tmp/zeroes.bin bs=1M count=2048
 fi
