@@ -1,10 +1,15 @@
-with Ada.Assertions;
+-- LZ4 Extractor Library in Ada 1.0.0, (c) 2022 Ma_Sys.ma <info@masysma.net>.
+-- Available under CC0, see blake3.ads for full license text
 
---with Ada.Text_IO; -- local use TODO DEBUG ONLY
+with Ada.Assertions;
 
 package body LZ4Ada is
 
-	-- Stream_Element_Array based functions --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+	-------------------------------------  STREAM_ELEMENT_ARRAY HANDLING  --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
 
 	-- Essentially performs unchecked conversions between the types on
 	-- the assumption that they are just different names for the same
@@ -51,7 +56,11 @@ package body LZ4Ada is
 		Frame_Ended  := Status.Frame_Has_Ended;
 	end Update;
 
-	-- Octets based functions --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+	--------------------------------------------------------------  INIT  --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
 
 	function Init  (Input:           in Octets;
 			Num_Consumed:    out Integer;
@@ -215,6 +224,12 @@ package body LZ4Ada is
 		return Ret;
 	end Load_64;
 
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+	------------------------------------------------------------  UPDATE  --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+
 	procedure Update(Ctx:    in out Decompressor;
 			 Input:  in Octets;
 			 Buffer: in out Octets;
@@ -245,7 +260,6 @@ package body LZ4Ada is
 
 	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
 					Status: in out Decompression_Status) is
-		-- TODO z CONVERSION SEEMS PROBLEMATIC / WRONG DIRECTION HERE
 		Remain: constant Integer := Integer(Ctx.Content_Size_Remaining);
 	begin
 		Status.Num_Consumed        := Integer'Min(Input'Length, Remain);
@@ -445,7 +459,6 @@ package body LZ4Ada is
 		if Ctx.Is_Compressed then
 			Ctx.Decompress_Full_Block(Raw_Data, Buffer, Status);
 		else
-			--Ada.Text_IO.Put_Line("WRITE 0 - UNCOMPRESSED");
 			Ctx.Write_Output(Input_Block, Input_Block'First, Last,
 									Buffer);
 			if Ctx.Output_Pos >= History_Size then
@@ -453,6 +466,7 @@ package body LZ4Ada is
 			end if;
 			Status.First := Ctx.Output_Pos - Raw_Data'Length;
 			Status.Last  := Ctx.Output_Pos - 1;
+			Ctx.Update_Checksum(Buffer, Status);
 		end if;
 	end Decode_Full_Block_With_Trailer;
 
@@ -466,6 +480,16 @@ package body LZ4Ada is
 				To_Hex(Compute_Checksum) & ".";
 		end if;
 	end Check_Checksum;
+
+	procedure Update_Checksum(Ctx: in out Decompressor;
+					Buffer: in Octets;
+					Status: in Decompression_Status) is
+	begin
+		if Ctx.Content_Checksum_Length /= 0 then
+			Ctx.Hash_All_Data.Update(Buffer(Status.First ..
+								Status.Last));
+		end if;
+	end Update_Checksum;
 
 	procedure Decompress_Full_Block(Ctx:    in out Decompressor;
 					Raw_Data: in Octets;
@@ -498,7 +522,6 @@ package body LZ4Ada is
 			-- Literals
 			Process_Variable_Length(Num_Literals);
 			if Num_Literals > 0 then
-				--Ada.Text_IO.Put_Line("WRITE 0 - LITERALS");
 				Ctx.Write_Output(Raw_Data, Idx, Idx +
 						Num_Literals - 1, Buffer);
 				Idx := Idx + Num_Literals;
@@ -535,6 +558,7 @@ package body LZ4Ada is
 			Decompress_Sequence;
 		end loop;
 		Status.Last := Ctx.Output_Pos - 1;
+		Ctx.Update_Checksum(Buffer, Status);
 		if Ctx.Output_Pos >= History_Size then
 			Ctx.Output_Pos_History := Ctx.Output_Pos;
 		end if;
@@ -543,6 +567,16 @@ package body LZ4Ada is
 	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets;
 					First: in Integer; Last: in Integer;
 					Buffer: in out Octets) is
+		-- Suppressing these checks gives a rather significant
+		-- performance boost. Feel free to enable them if safety is
+		-- hugely more important compared to performance for you.
+		-- On my test system, commenting out these "pragma Suppress"
+		-- statements gives a performance drop of about -100 MiB/s. YMMV
+		pragma Suppress(Length_Check);
+		pragma Suppress(Overflow_Check);
+		pragma Suppress(Index_Check);
+		pragma Suppress(Range_Check);
+
 		Num_El:     constant Integer := Last - First + 1;
 		Cursor_Out:          Integer := Ctx.Output_Pos;
 		Cursor_In:           Integer := First;
@@ -558,30 +592,11 @@ package body LZ4Ada is
 			Cursor_Out := Cursor_Out + 8;
 			Cursor_In  := Cursor_In  + 8;
 		end loop;
-
 		if Cursor_In <= Last then
-			declare 
-				Remainder: constant Integer := Last - Cursor_In;
-			begin
-				Buffer(Cursor_Out .. Cursor_Out + Remainder) :=
+			Buffer(Cursor_Out .. Cursor_Out + Last - Cursor_In) :=
 							Data(Cursor_In .. Last);
-			end;
 		end if;
-
-		Cursor_Out     := Ctx.Output_Pos;
 		Ctx.Output_Pos := Ctx.Output_Pos + Num_El;
-
-		if Ctx.Content_Checksum_Length /= 0 then
-			while Cursor_Out < Ctx.Output_Pos loop
-				Ctx.Hash_All_Data.Update8L(
-					Buffer(Cursor_Out .. Cursor_Out + 7),
-					Integer'Min(8,
-						Ctx.Output_Pos - Cursor_Out)
-				);
-				Cursor_Out := Cursor_Out + 8;
-			end loop;
-		end if;
-
 		Ctx.Decrease_Data_Size_Remaining(U64(Num_El));
 	end Write_Output;
 
@@ -665,6 +680,12 @@ package body LZ4Ada is
 		end if;
 	end Output_With_History;
 
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+	---------------------------------------------------------  XXHASH 32  --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+
 	package body XXHash32 is
 
 		function Init(Seed: in U32) return Hasher is
@@ -679,23 +700,26 @@ package body LZ4Ada is
 		end Init;
 
 		procedure Update(Ctx: in out Hasher; Input: in Octets) is
-			Has_Proc: Integer := 0;
+			Fast:  Boolean := (Ctx.Buffer_Size = 0);
+			Start: Integer := Input'First;
+			Len:   Integer;
 		begin
-			-- TODO z PERFORMANCE GAIN SEEMS DUBIOUS HERE
-			while Has_Proc < (Input'Length - 8) loop
-				Ctx.Update8L(Input(Input'First + Has_Proc ..
-						Input'First + Has_Proc + 7), 8);
-				Has_Proc := Has_Proc + 8;
+			while Start <= Input'Last loop
+				Len := Integer'Min(16, Input'Last - Start + 1);
+				if Len = 16 and Fast then
+					Ctx.Total_Length :=
+							Ctx.Total_Length + 16;
+					Ctx.Process(Input(Start .. Start + 15));
+					Start := Start + 16;
+				else
+					Fast := Ctx.Update1(Input(Start));
+					Start := Start + 1;
+				end if;
 			end loop;
-			for I in 0 .. (Input'Length - Has_Proc - 1) loop
-				Ctx.Update1(Input(Input'First + Has_Proc + I));
-			end loop;
-			--for I in Input'Range loop
-			--	Ctx.Update1(Input(I));
-			--end loop;
 		end Update;
 
-		procedure Update1(Ctx: in out Hasher; Input: in U8) is
+		function Update1(Ctx: in out Hasher; Input: in U8)
+							return Boolean is
 		begin
 			Ctx.Buffer(Ctx.Buffer_Size) := Input;
 			Ctx.Total_Length := Ctx.Total_Length + 1;
@@ -703,28 +727,10 @@ package body LZ4Ada is
 			if Ctx.Buffer_Size = Max_Buffer_Size then
 				Ctx.Buffer_Size := 0;
 				Ctx.Process(Ctx.Buffer);
+				return True;
 			end if;
+			return False;
 		end Update1;
-
-		procedure Update8L(Ctx: in out Hasher; Input: in Octets;
-						Num_To_Process: in Integer) is
-		begin
-			Ctx.Buffer(Ctx.Buffer_Size ..
-						Ctx.Buffer_Size + 7) := Input;
-			Ctx.Total_Length := Ctx.Total_Length +
-						U64(Num_To_Process);
-			Ctx.Buffer_Size := Ctx.Buffer_Size + Num_To_Process;
-			if Ctx.Buffer_Size >= Max_Buffer_Size then
-				Ctx.Buffer_Size := Ctx.Buffer_Size -
-							Max_Buffer_Size;
-				Ctx.Process(Ctx.Buffer);
-				if Ctx.Buffer_Size > 0 then
-					Ctx.Buffer(0 .. 7) :=
-						Ctx.Buffer(Max_Buffer_Size ..
-							Max_Buffer_Size + 7);
-				end if;
-			end if;
-		end Update8L;
 
 		procedure Process(Ctx: in out Hasher; Data: in Octets) is
 			B: Array(0..3) of U32;

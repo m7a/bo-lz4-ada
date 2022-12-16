@@ -2,8 +2,6 @@
 
 # To compare with reference implementation
 # LD_LIBRARY_PATH=lib tool_unlz4ada/unlz4ada < ~/wd/silesia.tar.lz4 | dd bs=1M of=/dev/null
-# Here, my implementation achieves around 200 MiB/s vs.
-# Debian's unlz4 has 830 MiB/s
 
 if ! [ -f /tmp/zeroes.bin ]; then
 	dd if=/dev/zero of=/tmp/zeroes.bin bs=1M count=2048
@@ -28,15 +26,35 @@ export LD_LIBRARY_PATH="$(dirname "$0")/lib"
 bin="$(dirname "$0")/tool_unlz4ada/unlz4ada"
 ulimit -s 60000
 
+if [ $# = 1 ] && [ "$1" = "-h" ]; then
+	run() {
+		hyperfine -m 50 "$1 < $2"
+	}
+elif [ $# = 1 ] && [ "$1" = "-p" ]; then
+	run() {
+		"$1" < "$2" | pv > /dev/null
+	}
+else
+	run() {
+		"$1" < "$2" | dd of=/dev/null bs=1M
+	}
+fi
+
 echo
 echo benchmark zeroes
-"$bin" < /tmp/zeroes.lz4 | dd of=/dev/null bs=1M
-echo
-echo benchmark random
-"$bin" < /tmp/random.lz4 | dd of=/dev/null bs=1M
-echo
-echo benchmark text
-"$bin" < /tmp/text.lz4 | dd of=/dev/null bs=1M
+run "$bin" /tmp/zeroes.lz4
 echo
 echo benchmark reference zeroes
-unlz4 < /tmp/zeroes.lz4 | dd of=/dev/null bs=1M
+run unlz4 /tmp/zeroes.lz4
+echo
+echo benchmark random
+run "$bin" /tmp/random.lz4
+echo
+echo benchmark reference random
+run unlz4 /tmp/random.lz4
+echo
+echo benchmark text
+run "$bin" /tmp/text.lz4
+echo
+echo benchmark reference text
+run unlz4 /tmp/text.lz4

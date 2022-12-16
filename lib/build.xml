@@ -9,6 +9,12 @@
 		<arg value="-Wall"/>
 		<arg value="-O3"/>
 		<arg value="-fPIC"/>
+		<arg value="-fstack-protector-strong"/>
+		<!-- optional, arch-specific speed improvements -->
+		<!--
+		<arg value="-msse"/>
+		<arg value="-msse2"/>
+		-->
 		<arg value="-c"/>
 		<arg value="${masysma.target}.adb"/>
 	</exec>
