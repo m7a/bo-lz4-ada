@@ -1,5 +1,5 @@
 -- LZ4 Extractor Library in Ada 1.0.0, (c) 2022 Ma_Sys.ma <info@masysma.net>.
--- Available under CC0, see blake3.ads for full license text
+-- Available under Expat License, see lz4ada.ads for full license and copyright.
 
 with Ada.Assertions;
 
@@ -260,15 +260,30 @@ package body LZ4Ada is
 
 	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
 					Status: in out Decompression_Status) is
-		Remain: constant Integer := Integer(Ctx.Content_Size_Remaining);
+		Remain:   constant U64 := Ctx.Content_Size_Remaining;
+		Consumed: constant U64 := U64'Min(U64(Input'Length), Remain);
 	begin
-		Status.Num_Consumed        := Integer'Min(Input'Length, Remain);
-		Ctx.Content_Size_Remaining := U64(Remain - Status.Num_Consumed);
+		Status.Num_Consumed        := Integer(Consumed);
+		Ctx.Content_Size_Remaining := Remain - Consumed;
 		Status.Frame_Has_Ended     := (Ctx.Content_Size_Remaining = 0);
 	end Skip;
 
 	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 					Status: in out Decompression_Status) is
+
+		procedure Set_Frame_Has_Ended is
+		begin
+			Status.Frame_Has_Ended := True;
+			if Ctx.Has_Content_Size and
+					Ctx.Content_Size_Remaining /= 0 then
+				raise Data_Corruption with
+					"Frame has ended, but according to " &
+					"content size, there should be " &
+					U64'Image(Ctx.Content_Size_Remaining) &
+					" bytes left to output.";
+			end if;
+		end Set_Frame_Has_Ended;
+
 		Provided_Input_Length: constant Integer :=
 			Input'Length - Status.Num_Consumed;
 		Required_Input_Length: constant Integer :=
@@ -276,7 +291,7 @@ package body LZ4Ada is
 	begin
 		if Ctx.Content_Checksum_Length = 0 or
 						Required_Input_Length <= 0 then
-			Status.Frame_Has_Ended := True;
+			Set_Frame_Has_Ended;
 		elsif Provided_Input_Length >= Required_Input_Length then
 			declare
 				Checksum: constant U32 := Load_32(
@@ -300,7 +315,7 @@ package body LZ4Ada is
 						To_Hex(Checksum) & ".";
 				end if;
 			end;
-			Status.Frame_Has_Ended := True;
+			Set_Frame_Has_Ended;
 		else
 			Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
 					Ctx.Input_Buffer_Filled +
@@ -618,19 +633,15 @@ package body LZ4Ada is
 	procedure Output_With_History(Ctx: in out Decompressor;
 				Offset: in Integer; Match_Length: in Integer;
 				Buffer: in out Octets) is
+		Raw_Offset:      constant Integer := Ctx.Output_Pos - Offset;
 		Remaining_Match: Integer := Match_Length;
-
-		Raw_Offset: constant Integer := Ctx.Output_Pos - Offset;
-
-		H_Offset: Integer;
-		H_Length: Integer;
-
-		I_Offset: Integer;
-		I_Length: Integer;
-
-		R_Start_Idx: Integer;
-		R_Length:    Integer;
-		R_Processed: Integer := 0;
+		H_Offset:        Integer;
+		H_Length:        Integer;
+		I_Offset:        Integer;
+		I_Length:        Integer;
+		R_Start_Idx:     Integer;
+		R_Length:        Integer;
+		R_Processed:     Integer := 0;
 	begin
 		if Raw_Offset >= 0 then
 			-- Start with intermediate part right away
@@ -712,7 +723,7 @@ package body LZ4Ada is
 					Ctx.Process(Input(Start .. Start + 15));
 					Start := Start + 16;
 				else
-					Fast := Ctx.Update1(Input(Start));
+					Fast  := Ctx.Update1(Input(Start));
 					Start := Start + 1;
 				end if;
 			end loop;
@@ -722,8 +733,8 @@ package body LZ4Ada is
 							return Boolean is
 		begin
 			Ctx.Buffer(Ctx.Buffer_Size) := Input;
-			Ctx.Total_Length := Ctx.Total_Length + 1;
-			Ctx.Buffer_Size  := Ctx.Buffer_Size  + 1;
+			Ctx.Total_Length            := Ctx.Total_Length + 1;
+			Ctx.Buffer_Size             := Ctx.Buffer_Size  + 1;
 			if Ctx.Buffer_Size = Max_Buffer_Size then
 				Ctx.Buffer_Size := 0;
 				Ctx.Process(Ctx.Buffer);
