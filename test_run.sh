@@ -6,6 +6,8 @@ ulimit -s 60000 # need enough stack size!
 root="$(cd "$(dirname "$0")" && pwd)"
 tmpd="$(mktemp -d)"
 arc=0
+uut="$root/tool_unlz4ada/unlz4ada"
+#uut="$root/tool_unlz4ada_singleframe/unlz4ada_singleframe"
 
 printf "Using temporary directory %s\n" "$tmpd"
 for i in test_vectors_lz4/*.lz4; do
@@ -16,8 +18,8 @@ for i in test_vectors_lz4/*.lz4; do
 	decoded="$tmpd/$namepart.uut"
 	printf "Test %-14s ... " "$namepart"
 	rv=0
-	LD_LIBRARY_PATH="$root/lib" time -p "$root/tool_unlz4ada/unlz4ada" \
-			< "$i" > "$decoded" 2> "$tmpd/$namepart.tim" || rv=$?
+	LD_LIBRARY_PATH="$root/lib" time -p "$uut" < "$i" > "$decoded" \
+					2> "$tmpd/$namepart.tim" || rv=$?
 	# more robust than `cmp` which chokes on empty files
 	chkgood="$(sha256sum < "$uncompressed")"
 	chkchck="$(sha256sum < "$decoded")"

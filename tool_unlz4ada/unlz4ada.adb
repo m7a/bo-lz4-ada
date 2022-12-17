@@ -51,7 +51,7 @@ begin
 	loop
 		Read(Stdin.all, Buf_Input, Last);
 		exit when Last < 0;
-		if Last < 7 then
+		if Last < 6 then
 			raise Constraint_Error with "Partial frame detected. " &
 						"Unable to process all data";
 		end if;
