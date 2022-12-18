@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project default="build">
+
+<property name="masysma.target" value="lz4test"/> 
+<dirname property="local.root" file="${ant.file}"/>
+<property name="masysma.ada.compile.1" value="-I${local.root}/../lib"/>
+<property name="masysma.ada.compile.8" value="-largs"/>
+<property name="masysma.ada.compile.9" value="-llz4ada"/>
+
+<target name="run" depends="build">
+	<exec executable="${local.root}/lz4test">
+		<env key="LD_LIBRARY_PATH" value="${local.root}/../lib"/>
+	</exec>
+</target>
+
+<target name="cov">
+	<exec executable="gnatmake" failonerror="true">
+		<arg value="-Wall"/>
+		<arg value="-f"/>
+		<arg value="${local.root}/../lib/lz4ada.adb"/>
+		<arg value="${local.root}/lz4test.adb"/>
+		<arg value="-cargs"/>
+		<arg value="-fprofile-arcs"/>
+		<arg value="-ftest-coverage"/>
+		<arg value="-largs"/>
+		<arg value="-fprofile-arcs"/>
+	</exec>
+	<copy file="${local.root}/../lib/lz4ada.adb" tofile="lz4ada.adb"/>
+	<copy file="${local.root}/lz4test.adb" tofile="b~lz4test.adb"/>
+	<exec executable="${local.root}/lz4test"/>
+	<exec executable="gcov">
+		<arg value="lz4ada.adb"/>
+		<arg value="lz4test.adb"/>
+	</exec>
+	<exec executable="lcov">
+		<arg value="-c"/>
+		<arg value="-d"/>
+		<arg value="."/>
+		<arg value="-o"/>
+		<arg value="cov.info"/>
+	</exec>
+	<mkdir dir="${local.root}/../cov"/>
+	<exec executable="genhtml">
+		<arg value="--output-directory"/>
+		<arg value="${local.root}/../cov"/>
+		<arg value="cov.info"/>
+	</exec>
+	<delete>
+		<fileset dir="${local.root}" includes="cov.info"/>
+		<fileset dir="${local.root}" includes="lz4ada.*"/>
+		<fileset dir="${local.root}" includes="b~lz4*"/>
+		<fileset dir="${local.root}" includes="lz4test.adb.*"/>
+		<fileset dir="${local.root}" includes="lz4test.ali"/>
+		<fileset dir="${local.root}" includes="lz4test.g*"/>
+		<fileset dir="${local.root}" includes="lz4test.o"/>
+		<fileset dir="${local.root}" includes="lz4test"/>
+	</delete>
+</target>
+
+<!-- CONSTANT TPL IMPORT -->
+<property environment="env"/>
+<condition property="masysma.internal.includepath.rel" value="${env.MDVL_CI_PHOENIX_ROOT}" else="../.."><isset property="env.MDVL_CI_PHOENIX_ROOT"/></condition>
+<property name="masysma.internal.includepath" location="${masysma.internal.includepath.rel}"/>
+<property name="masysma.internal.loadpath" value="${masysma.internal.includepath}/co-build/ant-build-template.xml"/>
+<condition property="masysma.internal.load" value="file://${masysma.internal.loadpath}" else="https://raw.githubusercontent.com/m7a/co-build/master/ant-build-template.xml"><resourceexists><file file="${masysma.internal.loadpath}"/></resourceexists></condition>
+<import><url url="${masysma.internal.load}"/></import>
+
+</project>
