@@ -21,24 +21,23 @@ procedure LZ4Test is
 
 	procedure Test_Inner(
 		Ctx:                  in out LZ4Ada.Decompressor;
-		Required_Buffer_Size: in Stream_Element_Offset;
+		Required_Buffer_Size: in     Stream_Element_Offset;
 		Buf_Input:            in out Stream_Element_Array;
 		Total_Consumed, Last: in out Stream_Element_Offset;
 		LZS, BNS:             in out Ada.Streams.Stream_IO.File_Type
 	) is
 		O_Buf, C_Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
-		End_Of_Frame: Boolean := False;
 		Consumed, C_Got, Len, Result_First, Result_Last:
-				Stream_Element_Offset;
+							Stream_Element_Offset;
 	begin
-		while not End_Of_Frame loop
+		loop
 			if Total_Consumed > Last then
 				Read(LZS, Buf_Input, Last);
+				exit when Last < 0;
 				Total_Consumed := 0;
 			end if;
 			Ctx.Update(Buf_Input(Total_Consumed .. Last), Consumed,
-					O_Buf, Result_First, Result_Last,
-					End_Of_Frame);
+					O_Buf, Result_First, Result_Last);
 			Len := (Result_Last - Result_First + 1);
 			if Len > 0 then
 				Read(BNS, C_Buf(Result_First .. Result_Last),
@@ -58,6 +57,9 @@ procedure LZ4Test is
 			end if;
 			Total_Consumed := Total_Consumed + Consumed;
 		end loop;
+		if Ctx.Is_End_Of_Frame = No then
+			raise Test_Failure with "Input data ended mid-frame";
+		end if;
 		Read(BNS, C_Buf, C_Got);
 		if C_Got > 0 then
 			raise Test_Failure with "Not all data decompressed";

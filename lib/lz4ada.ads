@@ -58,6 +58,24 @@ package LZ4Ada is
 	subtype U64 is Interfaces.Unsigned_64;
 	type Octets is array (Integer range <>) of U8;
 
+	-- The end of frame status can have three states
+	--
+	-- Yes:
+	--	The currently processed frame is a “modern” format frame
+	--	and as such, it can indicate when no more data fóllows.
+	--	End_Of_Frame = Yes means that this condition has been reached.
+	-- No:
+	--	The Decompressor context has currently “unfinished” data to
+	--	process or the current frame is “modern” and end-of-frame has
+	--	not been indicated yet.
+	-- Maybe:
+	--	The Decompressor context has an empty input buffer and is at
+	--	the end of a block and the current frame format is legacy.
+	--	This _could_ mean that no more data is to be processed. Since
+	--	legacy format does not guarantee this, though, `Maybe` is
+	--	reported.
+	type End_Of_Frame is (Yes, No, Maybe);
+
 	-- This exception is raised whenever an LZ4 checksum does not match.
 	-- The library does not currently support bypassing the checksum
 	-- verification (it is theoretically possible to remove checksums from
@@ -78,35 +96,6 @@ package LZ4Ada is
 
 	type Decompressor(In_Last: Integer) is tagged limited private;
 
-	-- Public part of the computation context
-	-- Users of the API are expected to process all of the values supplied
-	-- this way. These are all `out` parameters in the sense that the API
-	-- user should not (need to) write to these variables at any time.
-	type Decompression_Status is record
-		-- Num_Consumed reports how many bytes of the input data were
-		-- processed. This need not be the same as the number of input
-		-- bytes supplied because a small input can cause a large output
-		-- making it necessary to pause input data consumption early.
-		Num_Consumed:    Integer;
-
-		-- Signals that an LZ4 frame has ended. This marks the end of
-		-- the current Decompressor's lifecycle. If further frames are
-		-- to be processed, `Init` has to be called again to obtain a
-		-- new Decompressor.
-		Frame_Has_Ended: Boolean;
-
-		-- Marks the index of the first octet of the decompressed data
-		-- in the output buffer (inclusive).
-		--
-		-- Example: To access exctracted data as a slice, denote it as
-		--          follows: Buffer(Status.First .. Status.Last);
-		First:           Integer;
-
-		-- Marks the index of the last octet of the decompressed data
-		-- in the output buffer (inclusive).
-		Last:            Integer;
-	end record;
-
 	-- Initializes a new Decompressor capable of decompressing an entire
 	-- LZ4 frame.
 	--
@@ -123,42 +112,48 @@ package LZ4Ada is
 	--	size.
 	-- @return
 	--	Decompressor context
-	function Init  (Input:           in Octets;
+	function Init  (Input:           in  Octets;
 			Num_Consumed:    out Integer;
 			Min_Buffer_Size: out Integer)
 			return Decompressor with Pre => Input'Length >= 7;
 
 	-- Initializes a new Decompressor using Stream_Element_Array/_Offset
 	-- data types rather than the library-internal custom data types.
-	function Init  (Input:           in Ada.Streams.Stream_Element_Array;
+	function Init  (Input:           in  Ada.Streams.Stream_Element_Array;
 			Num_Consumed:    out Ada.Streams.Stream_Element_Offset;
 			Min_Buffer_Size: out Ada.Streams.Stream_Element_Offset)
 			return Decompressor with Pre => Input'Length >= 7;
 
-	-- Decompress data.
-	-- This variant uses the library-internal custom data types.
+	-- Decompress data using an “Octets”-based API
 	--
 	-- @param Ctx
 	--	Decompressor Context
 	-- @param Input
 	--	Any positive (> 0) number of input bytes 
+	-- @param Num_Consumed
+	--	Reports how many bytes of the input data were processed. This
+	--	need not be the same as the number of input bytes supplied
+	--	because a small input can cause a large output making it
+	--	necessary to pause input data consumption early.
 	-- @param Buffer
 	--	Buffer maintained between repeated `Update` calls.
 	--	The buffer size should be at least `Min_Buffer_Size` and data in
 	--	the buffer should not be changed between calls to `Update`.
-	-- @param Status
-	--	Record containing hints regarding the output.
-	--	See record documentation for details.
-	procedure Update(Ctx:    in out Decompressor;
-			 Input:  in Octets;
-			 Buffer: in out Octets;
-			 Status: out Decompression_Status)
+	-- @param Output_First
+	--	Marks the index of the first octet of the decompressed data in
+	--	the output buffer (inclusive).
+	-- @param Output_Last
+	--	Marks the index of the last octet of the decompressed data in
+	--	the output buffer (inclusive).
+	procedure Update(Ctx:         in out Decompressor;
+			Input:        in     Octets;
+			Num_Consumed: out    Integer;
+			Buffer:       in out Octets;
+			Output_First: out    Integer;
+			Output_Last:  out    Integer)
 			with Pre => (Buffer'First = 0);
 
-	-- Decompress data.
-	-- This variant uses standard types. This makes the interface more
-	-- verbose as multiple related parameters cannot be grouped to a record
-	-- this way.
+	-- Decompress data uing a “Stream_Element_Array”-based API
 	--
 	-- @param Ctx
 	--	Decompressor Context
@@ -182,13 +177,29 @@ package LZ4Ada is
 	--	process further frames, create a new Decompressor by calling
 	--	`Init`. Do not call `Update` again after receiving a
 	--	`Frame_Ended = True` outcome.
-	procedure Update(Ctx:          in out Decompressor;
-			 Input:        in Ada.Streams.Stream_Element_Array;
-			 Num_Consumed: out Ada.Streams.Stream_Element_Offset;
-			 Buffer:       in out Ada.Streams.Stream_Element_Array;
-			 Output_First: out Ada.Streams.Stream_Element_Offset;
-			 Output_Last:  out Ada.Streams.Stream_Element_Offset;
-			 Frame_Ended:  out Boolean);
+	procedure Update(Ctx:         in out Decompressor;
+			Input:        in     Ada.Streams.Stream_Element_Array;
+			Num_Consumed: out    Ada.Streams.Stream_Element_Offset;
+			Buffer:       in out Ada.Streams.Stream_Element_Array;
+			Output_First: out    Ada.Streams.Stream_Element_Offset;
+			Output_Last:  out    Ada.Streams.Stream_Element_Offset);
+
+	-- Checks the end of frame status of the given Decompressor context.
+	--
+	-- Applications are encouraged to check that once the input data has
+	-- ended, this function does not return `No` because that indicates
+	-- a data corrpution.
+	--
+	-- @param Ctx
+	--	Decompressor to check
+	-- @return
+	--	Yes:    when this frame has definetely ended.
+	--	No:     when there is input data in the buffer that has not been
+	--	        processed yet.
+	--	Maybe:  when legacy format is processed and end of block is
+	--	        reached. Legacy format does not signal “end of frame”
+	--	        explicitly.
+	function Is_End_Of_Frame(Ctx: in Decompressor) return End_Of_Frame;
 
 	-- Useful routines for testing purposes. Not part of the stable API!
 	function To_Hex(Num: in U8)  return String;
@@ -248,33 +259,36 @@ private
 	function Load_64(Data: in Octets) return U64
 						with Pre => Data'Length = 8;
 	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
-					Status: in out Decompression_Status);
+						Num_Consumed: out Integer);
 	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
-					Status: in out Decompression_Status);
+						Num_Consumed: in out Integer);
 	-- Num_Consumed = 0 predondition could be lifted by improving the code
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer)
 			with Pre => (Ctx.Input_Buffer_Filled < Block_Size_Bytes
 					and Num_Consumed = 0);
 	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
-				Input: in Octets; Buffer: in out Octets;
-				Status: in out Decompression_Status);
+				Input: in Octets; Num_Consumed: in out Integer;
+				Buffer: in out Octets;
+				Output_First: in out Integer;
+				Output_Last: in out Integer);
 	procedure Cache_Data_And_Process_If_Full(Ctx: in out Decompressor;
-				Input: in Octets; Buffer: in out Octets;
-				Status: in out Decompression_Status);
+			Input: in Octets; Num_Consumed: in out Integer;
+			Buffer: in out Octets; Output_First: in out Integer;
+			Output_Last: in out Integer);
 	procedure Decode_Full_Block_With_Trailer(
-				Ctx:         in out Decompressor;
-				Input_Block: in Octets;
-				Buffer:      in out Octets;
-				Status:      in out Decompression_Status);
+				Ctx:          in out Decompressor;
+				Input_Block:  in     Octets;
+				Buffer:       in out Octets;
+				Output_First: out    Integer;
+				Output_Last:  out    Integer);
 	procedure Check_Checksum(Data: in Octets; Expect_Checksum: in U32);
-	procedure Update_Checksum(Ctx: in out Decompressor;
-					Buffer: in Octets;
-					Status: in Decompression_Status);
-	procedure Decompress_Full_Block(Ctx:    in out Decompressor;
-					Raw_Data: in Octets;
-					Buffer: in out Octets;
-					Status: in out Decompression_Status);
+	procedure Update_Checksum(Ctx: in out Decompressor; Outp: in Octets);
+	procedure Decompress_Full_Block(Ctx:          in out Decompressor;
+					Raw_Data:     in     Octets;
+					Buffer:       in out Octets;
+					Output_First: out    Integer;
+					Output_Last:  out    Integer);
 	procedure Write_Output(Ctx: in out Decompressor; Data: in Octets;
 					First: in Integer; Last: in Integer;
 					Buffer: in out Octets);
@@ -291,6 +305,7 @@ private
 		Content_Checksum_Length: Integer; -- 0 or 4
 		Block_Checksum_Length:   Integer; -- 0 or 4
 		Is_At_End_Mark:          Boolean;
+		Status_EOF:              End_Of_Frame;
 		Input_Buffer:            Octets(0 .. In_Last);
 		Output_Pos:              Integer;
 		Output_Pos_History:      Integer;

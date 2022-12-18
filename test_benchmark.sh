@@ -24,6 +24,7 @@ done
 
 export LD_LIBRARY_PATH="$(dirname "$0")/lib"
 bin="$(dirname "$0")/tool_unlz4ada/unlz4ada"
+#bin="$(dirname "$0")/tool_unlz4ada_singleframe/unlz4ada_singleframe"
 ulimit -s 60000
 
 if [ $# = 1 ] && [ "$1" = "-h" ]; then
