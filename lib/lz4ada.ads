@@ -1,4 +1,5 @@
--- LZ4 Extractor Library in Ada 1.0.0, (c) 2022 Ma_Sys.ma <info@masysma.net>.
+-- LZ4 Extractor Library in Ada 1.0.0,
+-- (c) 2022, 2023 Ma_Sys.ma <info@masysma.net>.
 --
 -- This implementation has been created according to the LZ4 Block and Frame
 -- format specifications taking some loose inspriation also from the
@@ -9,7 +10,7 @@
 --
 -- MIT License
 --
--- Copyright (c) 2022 Ma_Sys.ma <info@masysma.net>
+-- Copyright (c) 2022, 2023 Ma_Sys.ma <info@masysma.net>
 -- Copyright (c) 2018 Stephan Brumme
 --
 -- Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -93,6 +94,22 @@ package LZ4Ada is
 	-- corrupted data but could be a valid new extension of the format,
 	-- a dedicated Not_Supported exception is raised in this case.
 	Not_Supported:   exception;
+
+	-- This exception is raised whenever `Update` is called again after an
+	-- end of frame condition has already been reached and was possible to
+	-- detect by the library user already. If the library user's
+	-- implementation ensures proper termination even in cases where none of
+	-- the supplied data is consumed _and also_ no new output is generated
+	-- then it may be safe to ignore this exception. In this sense it can be
+	-- seen as conceptually similar but not exactly equal to the `End_Error`
+	-- from the Ada Standard Library. It is recommended to design
+	-- applications in way that this exception is not relied on, though.
+	-- Depending on implementation, this exception can occur when
+	-- implementations which expect to process only a single frame are
+	-- provided with data that consists of multiple frames. In these cases,
+	-- the `No_Progress` exception is expected to be handled similar to
+	-- a data corruption.
+	No_Progress:     exception;
 
 	type Decompressor(In_Last: Integer) is tagged limited private;
 

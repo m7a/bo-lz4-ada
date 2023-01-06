@@ -1,4 +1,6 @@
--- LZ4 Extractor Library in Ada 1.0.0, (c) 2022 Ma_Sys.ma <info@masysma.net>.
+-- LZ4 Extractor Library in Ada 1.0.0,
+-- (c) 2022, 2023 Ma_Sys.ma <info@masysma.net>.
+--
 -- Available under Expat License, see lz4ada.ads for full license and copyright.
 
 with Ada.Assertions;
@@ -88,19 +90,18 @@ package body LZ4Ada is
 		case Magic_NB is
 		when Magic_Modern =>
 			Declared_Format := Modern;
+			-- Even if data size is 0, this frame can still contain
+			-- data. Process such data.
+			Status_End_Of_Frame := No;
 			Check_Flag_Validity(FLG_Version, FLG_Reserved or
 							BD_Has_Reserved);
 			Block_Max_Size := Block_Size_Table(BD_Block_Max_Size);
 
-			Status_End_Of_Frame := No;
 			-- record content size if available
 			if FLG_Content_Size then
 				Content_Size := Load_64(Input(Cursor ..
 								Cursor + 7));
 				Cursor       := Cursor + 8;
-				if Content_Size = 0 then
-					Status_End_Of_Frame := Yes;
-				end if;
 			end if;
 
 			-- skip over dictionary ID
@@ -264,6 +265,10 @@ package body LZ4Ada is
 		Remain:   constant U64 := Ctx.Content_Size_Remaining;
 		Consumed: constant U64 := U64'Min(U64(Input'Length), Remain);
 	begin
+		if Ctx.Status_EOF = Yes and Consumed = 0 then
+			raise No_Progress with
+					"Skippable frame has ended already.";
+		end if;
 		Num_Consumed               := Integer(Consumed);
 		Ctx.Content_Size_Remaining := Remain - Consumed;
 		Ctx.Status_EOF             := (if Ctx.Content_Size_Remaining = 0
@@ -290,6 +295,10 @@ package body LZ4Ada is
 							Ctx.Input_Buffer_Filled;
 	begin
 		if Ctx.Content_Checksum_Length = 0 or Required_Len <= 0 then
+			if Ctx.Status_EOF = Yes and Num_Consumed = 0 then
+				raise No_Progress with
+						"End mark already processed.";
+			end if;
 			Set_Frame_Has_Ended;
 		elsif Provided_Len >= Required_Len then
 			declare
@@ -585,7 +594,7 @@ package body LZ4Ada is
 		-- performance boost. Feel free to enable them if safety is
 		-- hugely more important compared to performance for you.
 		-- On my test system, commenting out these "pragma Suppress"
-		-- statements gives a performance drop of about -100 MiB/s. YMMV
+		-- statements gives a performance drop of at least -100 MiB/s...
 		pragma Suppress(Length_Check);
 		pragma Suppress(Overflow_Check);
 		pragma Suppress(Index_Check);
@@ -629,6 +638,10 @@ package body LZ4Ada is
 		end if;
 	end Decrease_Data_Size_Remaining;
 
+	-- While this procedure looks a little convoluted, it is significantly
+	-- faster compared to a naive solution where each byte is evaluated
+	-- again as to whether a “wrap around” nees to be considered or not
+	-- (even if this choice is hidden in a modulus operation!)
 	procedure Output_With_History(Ctx: in out Decompressor;
 				Offset: in Integer; Match_Length: in Integer;
 				Buffer: in out Octets) is
@@ -669,14 +682,14 @@ package body LZ4Ada is
 								Ctx.Output_Pos);
 		end if;
 
-		-- Intermediate Part
+		-- Intermediate part
 		if I_Length > 0 then
 			Ctx.Write_Output(Buffer, I_Offset,
 					I_Offset + I_Length - 1, Buffer);
 			Remaining_Match := Remaining_Match - I_Length;
 		end if;
 
-		-- Have Repeating part to handle
+		-- Have repeating part to handle
 		if Remaining_Match > 0 then
 			R_Start_Idx := Ctx.Output_Pos - Offset;
 			while R_Processed < Remaining_Match loop
@@ -718,6 +731,10 @@ package body LZ4Ada is
 			Start: Integer := Input'First;
 			Len:   Integer;
 		begin
+			-- Processing is much faster if data need not be
+			-- copied to the internal buffer first. This loop does
+			-- this for the minimum number of thimes and uses
+			-- to a “fast” mode without copying as much as possible
 			while Start <= Input'Last loop
 				Len := Integer'Min(16, Input'Last - Start + 1);
 				if Len = 16 and Fast then

@@ -152,7 +152,7 @@ procedure LZ4Test is
 		BO: Stream_Element_Array(0 ..  Required_Buffer_Size);
 		Consumed, RF, RL: Stream_Element_Offset;
 	begin
-		while Total_Consumed < Buf_Input'Length loop
+		loop
 			Ctx.Update(Buf_Input(Total_Consumed .. Buf_Input'Last),
 							Consumed, BO, RF, RL);
 			if Consumed = 0 then
