@@ -1,0 +1,1 @@
+raised LZ4ADA.NOT_SUPPORTED : Only LZ4 frame format version 01 supported. Detected 0x02 instead.

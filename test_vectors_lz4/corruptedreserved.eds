@@ -1,0 +1,1 @@
+raised LZ4ADA.NOT_SUPPORTED : Found reserved bits /= 0. Data might be too new to be processed by this implementation!
