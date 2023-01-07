@@ -1,0 +1,1 @@
+raised LZ4ADA.DATA_CORRUPTION : Match_Length= 15 suggests compressed data but this sequence already ends after the literals. This might also happen with an untypical encoder?

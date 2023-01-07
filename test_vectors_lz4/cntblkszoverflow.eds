@@ -1,0 +1,1 @@
+raised LZ4ADA.DATA_CORRUPTION : Declared maximum data length exceeded. Buffer has  65540 bytes, current block requires  78119 bytes +  4 bytes for metadata.

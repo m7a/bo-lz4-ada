@@ -1,0 +1,1 @@
+raised LZ4ADA.DATA_CORRUPTION : Backreference location out of range. Read from offset -65024 not possible (earliest available index is 0).

@@ -34,8 +34,13 @@ procedure LZ4Test is
 		O_Buf, C_Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
 		Consumed, C_Got, Len, Result_First, Result_Last:
 							Stream_Element_Offset;
+		EOF_Status: End_Of_Frame := Ctx.Is_End_Of_Frame;
 	begin
-		while Ctx.Is_End_Of_Frame /= Yes loop
+		-- We must do the loop at least once in maybe cases
+		if EOF_Status = Maybe then
+			EOF_Status := No;
+		end if;
+		while EOF_Status = No loop
 			if Total_Consumed > Last then
 				Read(LZS, Buf_Input, Last);
 				exit when Last < 0;
@@ -61,10 +66,8 @@ procedure LZ4Test is
 				end if;
 			end if;
 			Total_Consumed := Total_Consumed + Consumed;
+			EOF_Status := Ctx.Is_End_Of_Frame;
 		end loop;
-		if Ctx.Is_End_Of_Frame = No then
-			raise Test_Failure with "Input data ended mid-frame";
-		end if;
 	end Test_Inner;
 
 	procedure Test_Good_Case_Inner(LZS, BNS:

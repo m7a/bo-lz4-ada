@@ -71,7 +71,7 @@ begin
 			end if;
 			Total_Consumed := 0;
 		end if;
-		EOF_Status := LZ4Ada.Maybe;
+		EOF_Status := LZ4Ada.No;
 		declare
 			Required_Buffer_Size: Stream_Element_Offset;
 			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
@@ -80,7 +80,16 @@ begin
 			Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
 		begin
 			Total_Consumed := Total_Consumed + Consumed;
-			while EOF_Status /= LZ4Ada.Yes and not End_Of_Input loop
+			-- Check for = No here because we need to assume that
+			-- each potential end of frame is treated like an
+			-- actual end of frame given that after the current
+			-- legacy frame there might be a modern frame that
+			-- needs different decoder settings and hence a
+			-- re-iteration of `init`. This is slower than
+			-- checking for `EOF_Status /= LZ4Ada.Yes` which you
+			-- might prefer in case you do not need to deal with
+			-- mixed legacy/modern frame inputs.
+			while EOF_Status = LZ4Ada.No and not End_Of_Input loop
 				Process_Inner(Ctx, Buf);
 			end loop;
 		end;
