@@ -25,6 +25,7 @@ This implementation only supports decompression!
  * Provided checksums are verified.
  * Provided length information is verified.
  * Big Endian architectures are _UNSUPPORTED_.
+ * Dictionaries are _UNSUPPORTED_.
 
 Performance is slower compared to reference and C implementations: On my system,
 the library decompresses slower than 1100 MiB/s. The Debian-supplied `unlz4`

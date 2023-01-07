@@ -35,7 +35,7 @@ procedure LZ4Test is
 		Consumed, C_Got, Len, Result_First, Result_Last:
 							Stream_Element_Offset;
 	begin
-		loop
+		while Ctx.Is_End_Of_Frame /= Yes loop
 			if Total_Consumed > Last then
 				Read(LZS, Buf_Input, Last);
 				exit when Last < 0;
@@ -65,27 +65,36 @@ procedure LZ4Test is
 		if Ctx.Is_End_Of_Frame = No then
 			raise Test_Failure with "Input data ended mid-frame";
 		end if;
-		Read(BNS, C_Buf, C_Got);
-		if C_Got > 0 then
-			raise Test_Failure with "Not all data decompressed";
-		end if;
 	end Test_Inner;
 
 	procedure Test_Good_Case_Inner(LZS, BNS:
 				in out Ada.Streams.Stream_IO.File_Type) is
 		Buf_Input: Stream_Element_Array(0 .. 4095);
-		Last, Total_Consumed, Required_Buffer_Size:
-							Stream_Element_Offset;
+		Last: Stream_Element_Offset := -1;
+		Total_Consumed: Stream_Element_Offset := 0;
+		Required_Buffer_Size: Stream_Element_Offset;
 	begin
-		Read(LZS, Buf_Input, Last);
-		declare
-			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
+		loop
+			Read(LZS, Buf_Input(Last - Total_Consumed + 1 ..
+							Buf_Input'Last), Last);
+			exit when Last < 0;
+			if Last < 6 then
+				raise Test_Failure with
+						"Partial frame detected. " &
+						"Unable to process all data";
+			end if;
+			declare
+				Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
 					Buf_Input(0 .. Last), Total_Consumed,
 					Required_Buffer_Size);
-		begin
-			Test_Inner(Ctx, Required_Buffer_Size, Buf_Input,
-					Total_Consumed, Last, LZS, BNS);
-		end;
+			begin
+				Test_Inner(Ctx, Required_Buffer_Size, Buf_Input,
+						Total_Consumed, Last, LZS, BNS);
+			end;
+			exit when Last < 0;
+			Buf_Input(0 .. Last - Total_Consumed) :=
+					Buf_Input(Total_Consumed .. Last);
+		end loop;
 	end Test_Good_Case_Inner;
 
 	procedure Open_Stream_Reading(S: in out Ada.Streams.Stream_IO.File_Type;
@@ -152,7 +161,7 @@ procedure LZ4Test is
 		BO: Stream_Element_Array(0 ..  Required_Buffer_Size);
 		Consumed, RF, RL: Stream_Element_Offset;
 	begin
-		loop
+		while Total_Consumed < Buf_Input'Length loop
 			Ctx.Update(Buf_Input(Total_Consumed .. Buf_Input'Last),
 							Consumed, BO, RF, RL);
 			if Consumed = 0 then
@@ -203,7 +212,8 @@ procedure LZ4Test is
 		when Test_Failure =>
 			raise;
 		-- declared exceptions are expected
-		when Ex: Checksum_Error|Data_Corruption|Not_Supported =>
+		when Ex: Checksum_Error|Data_Corruption|Not_Supported|
+								No_Progress =>
 			Detail_Check_Error(Ex, Declared);
 		-- there should not be any constraint errors or such
 		when Ex: others =>

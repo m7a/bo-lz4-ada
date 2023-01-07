@@ -14,11 +14,11 @@ procedure UnLZ4Ada is
 		Ada.Text_IO.Text_Streams.Stream(Ada.Text_IO.Standard_Output);
 	
 	Buf_Input:      Stream_Element_Array(0 .. 4095);
-	Last:           Stream_Element_Offset;
+	Last:           Stream_Element_Offset := -1;
 	Consumed:       Stream_Element_Offset;
-	Total_Consumed: Stream_Element_Offset;
+	Total_Consumed: Stream_Element_Offset := 0;
 	End_Of_Input:   Boolean := False;
-	EOF_Status:     LZ4Ada.End_Of_Frame := LZ4Ada.Maybe;
+	EOF_Status:     LZ4Ada.End_Of_Frame;
 
 	procedure Process_Inner(Ctx: in out LZ4Ada.Decompressor;
 				Buf: in out Stream_Element_Array) is
@@ -55,21 +55,31 @@ procedure UnLZ4Ada is
 			end if;
 		end if;
 	end Process_Inner;
+
 begin
 	while not End_Of_Input loop
-		Read(Stdin.all, Buf_Input, Last);
-		exit when Last < 0;
-		if Last < 6 then
-			raise Constraint_Error with "Partial frame detected. " &
+		if Last - Total_Consumed < 6 then
+			Buf_Input(0 .. Last - Total_Consumed) :=
+					Buf_Input(Total_Consumed .. Last);
+			Read(Stdin.all, Buf_Input(Last - Total_Consumed + 1 ..
+							Buf_Input'Last), Last);
+			exit when Last < 0;
+			if Last < 6 then
+				raise Constraint_Error with
+						"Partial frame detected. " &
 						"Unable to process all data";
+			end if;
+			Total_Consumed := 0;
 		end if;
+		EOF_Status := LZ4Ada.Maybe;
 		declare
 			Required_Buffer_Size: Stream_Element_Offset;
 			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
-					Buf_Input(0 .. Last), Total_Consumed,
-					Required_Buffer_Size);
+					Buf_Input(Total_Consumed .. Last),
+					Consumed, Required_Buffer_Size);
 			Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
 		begin
+			Total_Consumed := Total_Consumed + Consumed;
 			while EOF_Status /= LZ4Ada.Yes and not End_Of_Input loop
 				Process_Inner(Ctx, Buf);
 			end loop;
