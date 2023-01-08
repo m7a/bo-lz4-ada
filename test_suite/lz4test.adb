@@ -141,16 +141,112 @@ procedure LZ4Test is
 		end if;
 	end Generic_Test_Case;
 
+	procedure Test_Good_Hash_Individual_Bytes is
+		use type LZ4Ada.U32;
+		TC: constant Octets := (16#1a#, 16#1a#, 16#1a#, 16#1a#,
+					16#1a#, 16#1a#, 16#1a#, 16#1a#,
+					16#1a#, 16#1a#, 16#1a#, 16#1a#,
+					16#1a#, 16#1a#, 16#11#, 16#10#);
+		Ctx: XXHash32.Hasher := XXHash32.Init;
+	begin
+		for I in TC'Range loop
+			Ctx.Update(TC(I .. I));
+		end loop;
+		if Ctx.Final = 16#f994ef8a# then
+			Put_Line("[ OK ] Test_Good_Hash_Individual_Bytes");
+		else
+			Put_Line("[FAIL] Test_Good_Hash_Individual_Bytes -- " &
+						"expected 0xf994ef8a, got " &
+						To_Hex(Ctx.Final));
+		end if;
+	end Test_Good_Hash_Individual_Bytes;
+
+	-- TODO NEED THIS FOR MORE TEST CASES / BASED ON FILES MIGHT MAKE
+	--      MORE SENSE ANYWAYS ALSO MULTIFRAME CAPABILITY
+	procedure Test_Good_Decompress_Individual_Bytes is
+		ENOOUT: constant String :=
+			"[FAIL] Test_Good_Decompress_Individual_Bytes - " &
+			"no output produced but expected";
+		TC: constant Octets(0 .. 19) := (
+			16#04#, 16#22#, 16#4d#, 16#18#, 16#64#, 16#40#, 16#a7#,
+			16#01#, 16#00#, 16#00#, 16#80#, 16#00#, 16#00#, 16#00#,
+			16#00#, 16#00#, 16#3e#, 16#b0#, 16#65#, 16#cf#
+		--#TC: constant Octets(0 .. 77) := (
+		--	16#02#, 16#21#, 16#4c#, 16#18#, 16#30#, 16#00#, 16#00#,
+		--	16#00#, 16#f0#, 16#1f#, 16#3c#, 16#3f#, 16#78#, 16#6d#,
+		--	16#6c#, 16#20#, 16#76#, 16#65#, 16#72#, 16#73#, 16#69#,
+		--	16#6f#, 16#6e#, 16#3d#, 16#22#, 16#31#, 16#2e#, 16#30#,
+		--	16#22#, 16#20#, 16#65#, 16#6e#, 16#63#, 16#6f#, 16#64#,
+		--	16#69#, 16#6e#, 16#67#, 16#3d#, 16#22#, 16#55#, 16#54#,
+		--	16#46#, 16#2d#, 16#38#, 16#22#, 16#3f#, 16#3e#, 16#3c#,
+		--	16#74#, 16#65#, 16#73#, 16#74#, 16#2f#, 16#3e#, 16#0a#,
+		--	16#02#, 16#21#, 16#4c#, 16#18#, 16#0e#, 16#00#, 16#00#,
+		--	16#00#, 16#d0#, 16#48#, 16#65#, 16#6c#, 16#6c#, 16#6f#,
+		--	16#20#, 16#77#, 16#6f#, 16#72#, 16#6c#, 16#64#, 16#2e#,
+		--	16#0a#
+		);
+		--Expect_Str: constant String :=
+		--	"<?xml version=""1.0"" encoding=""UTF-8""?><test/>" &
+		--	Character'Val(16#a0#) & "Hello world." &
+		--	Character'Val(16#a0#);
+		--RS_Expect: Octets(0 .. Expect_Str'Length - 1);
+		--for RS_Expect'Address use Expect_Str'Address;
+		RS_Expect: constant Octets := (0 => 16#00#);
+
+		RS_Have: Octets(RS_Expect'Range);
+		Initially_Consumed, Min_Buffer_Size: Integer;
+		Ctx: Decompressor := Init(TC, Initially_Consumed,
+							Min_Buffer_Size);
+		O_Buf: Octets(0 .. Min_Buffer_Size - 1);
+		Num_Consumed, Output_First, Output_Last: Integer;
+		RS_Idx: Integer := RS_Have'First;
+	begin
+		for I in Initially_Consumed .. TC'Last loop
+			Num_Consumed := 0;
+			while Num_Consumed = 0 loop
+				Ctx.Update(TC(I .. I), Num_Consumed, O_Buf,
+						Output_First, Output_Last);
+				if Num_Consumed = 0 and Output_Last <
+							Output_First then
+					Put_Line(ENOOUT);
+					return;
+				end if;
+				if Output_First >= Output_Last then
+					RS_Have(RS_Idx .. RS_Idx + Output_Last -
+						Output_First) := O_Buf(
+						Output_First .. Output_Last);
+					RS_Idx := RS_Idx +
+						Output_Last - Output_First + 1;
+				end if;
+			end loop;
+		end loop;
+		if RS_Idx /= RS_Expect'Length then
+			Put_Line("[FAIL] Test_Good_Decompress_Individual_Bytes"
+				& " - too little output: " &
+				Integer'Image(RS_Idx) & "/" &
+				Integer'Image(RS_Expect'Length) &
+				" bytes produced.");
+		elsif RS_Have /= RS_Expect then
+			Put_Line("[FAIL] Test_Good_Decompress_Individual_Bytes"
+				& " - wrong output produced.");
+		else
+			Put_Line("[ OK ] " &
+				"Test_Good_Decompress_Individual_Bytes");
+		end if;
+	end Test_Good_Decompress_Individual_Bytes;
+
 	procedure Test_Good_Cases is
 		procedure Test_Good_Case is new Generic_Test_Case(
-				BNT => Ada.Streams.Stream_IO.File_Type,
-				Ext => "bin", Run => Test_Good_Case_Inner,
-				Open_BNT => Open_Stream_Reading,
+				BNT       => Ada.Streams.Stream_IO.File_Type,
+				Ext       => "bin", Run => Test_Good_Case_Inner,
+				Open_BNT  => Open_Stream_Reading,
 				Close_BNT => Close);
 	begin
 		Search("../test_vectors_lz4", "*.lz4",
-			(Ordinary_File => True, others => False),
-			Test_Good_Case'Access);
+				(Ordinary_File => True, others => False),
+				Test_Good_Case'Access);
+		Test_Good_Hash_Individual_Bytes;
+		Test_Good_Decompress_Individual_Bytes;
 	end Test_Good_Cases;
 
 	--

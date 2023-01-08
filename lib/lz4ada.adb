@@ -5,6 +5,8 @@
 
 with Ada.Assertions;
 
+with Ada.Text_IO;
+
 package body LZ4Ada is
 
 	------------------------------------------------------------------------
@@ -305,7 +307,8 @@ package body LZ4Ada is
 				Checksum: constant U32 := Load_32(
 					Ctx.Input_Buffer(0 ..
 						Ctx.Input_Buffer_Filled - 1) &
-					Input(Num_Consumed .. Num_Consumed +
+					Input(Input'First + Num_Consumed ..
+						Input'First + Num_Consumed +
 						Required_Len - 1)
 				);
 				Compare: constant U32 :=
@@ -333,6 +336,16 @@ package body LZ4Ada is
 		end if;
 	end Check_End_Mark;
 
+	-- TODO TEST ONLY
+	-- function Is_Any_Magic_Number(Candidate: in U32) return Boolean is
+	-- begin
+	-- 	case Candidate is
+	-- 	when Magic_Modern|Magic_Legacy    => return True;
+	-- 	when 16#184d2a50# .. 16#184d2a5f# => return True;
+	-- 	when others                       => return False;
+	-- 	end case;
+	-- end Is_Any_Magic_Number;
+
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer) is
 		Additional_Length: constant Integer :=
@@ -354,16 +367,23 @@ package body LZ4Ada is
 				Ctx.Is_At_End_Mark      := True;
 				Ctx.Input_Buffer_Filled := 0;
 				return;
+			-- TODO IS IT CORRECT TO CHECK FOR LEGACY MAGIC HERE OR WOULD WE RATHER CHECK FOR ANY OF THE ALLOWED MAGIC SEQUENCES? IT DOES NOT MATTER FOR THE TEST DATA SO FAR BECAUSE NEITHER LOGIC TRIGGERS THE CONDITION TO BECOME TRUE. NEED MORE TEST DATA FOR THIS ONE. CAN TEST THIS WITH "ONE BYTE AT A TIME MODE"
 			elsif Ctx.Is_Format = Legacy and
 						Length_Word = Magic_Legacy then
-				Ctx.Is_At_End_Mark      := True;
-				-- may not strictly be necessary:
-				Ctx.Input_Buffer_Filled := 4;
-				Ctx.Input_Buffer(0 .. Block_Size_Bytes - 1)
-							:= (others => 0);
-				Ada.Assertions.Assert(Num_Consumed >=
-							Block_Size_Bytes);
-				-- unconsume this part from the next frame!
+				Ctx.Is_At_End_Mark := True;
+				Ada.Text_IO.Put_Line("Num_Consumed = " &
+						Integer'Image(Num_Consumed));
+				-- Unconsume this part from the next frame!
+				-- This can make the number of bytes consumed
+				-- negative because we actually want to tell the
+				-- library users when we "unconsume" beyond the
+				-- currently provided input. This is expected to
+				-- occur only in case of very small input
+				-- buffers being provided (i.e. buffers smaller
+				-- than four bytes).
+				-- As a result, we cannot assert the following
+				-- here although it would be more intuitive:
+				-- Num_Consumed >= Block_Size_Bytes
 				Num_Consumed := Num_Consumed - Block_Size_Bytes;
 				return;
 			end if;
@@ -721,7 +741,7 @@ package body LZ4Ada is
 				State_1      => Seed + Prime_2,
 				State_2      => Seed,
 				State_3      => Seed - Prime_1,
-				Buffer       => (others => 0),
+				Buffer       => (others => 0), -- syntax only
 				Buffer_Size  => 0,
 				Total_Length => 0);
 		end Init;
