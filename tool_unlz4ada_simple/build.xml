@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project default="build">
 
-<property name="masysma.target" value="unlz4ada_singleframe"/> 
+<property name="masysma.target" value="unlz4ada_simple"/> 
 <dirname property="local.root" file="${ant.file}"/>
 <property name="masysma.ada.compile.1" value="-I${local.root}/../lib"/>
 <property name="masysma.ada.compile.8" value="-largs"/>
