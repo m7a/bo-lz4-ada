@@ -5,7 +5,7 @@
 
 with Ada.Assertions;
 
-with Ada.Text_IO;
+-- TODO DRAFT EXISTS. MAKE IT COMPILE. THEN TEST WITH EXISTENT PROGRAMS. THEN REALLY CHECK INTO HOW TO "RE-INIT" IN PLACE WHENEVER RESERVATION IS NOT "Single_Frame". ALSO FIND OUT WHETHER WE CAN ORGANIZE EXCEPTIONS ANY BETTER
 
 package body LZ4Ada is
 
@@ -15,41 +15,32 @@ package body LZ4Ada is
 	------------------------------------------------------------------------
 	------------------------------------------------------------------------
 
+	function Init(Min_Buffer_Size:      out Stream_Element_Offset;
+			Reservation:        in  Memory_Reservation := For_All)
+			return Decompressor is
+			(Init(Integer(Min_Buffer_Size), Reservation));
+
 	-- Essentially performs unchecked conversions between the types on
 	-- the assumption that they are just different names for the same
 	-- thing. Use with care.
-	function Init  (Input:           in  Ada.Streams.Stream_Element_Array;
-			Num_Consumed:    out Ada.Streams.Stream_Element_Offset;
-			Min_Buffer_Size: out Ada.Streams.Stream_Element_Offset)
-			return Decompressor is
-		Input_Conv: Octets(0 .. Input'Length - 1);
-		for Input_Conv'Address use Input'Address;
-	begin
-		return Init(Input_Conv, Integer(Num_Consumed),
-						Integer(Min_Buffer_Size));
-	end Init;
-
 	procedure Update(Ctx:          in out Decompressor;
-			 Input:        in     Ada.Streams.Stream_Element_Array;
-			 Num_Consumed: out    Ada.Streams.Stream_Element_Offset;
-			 Buffer:       in out Ada.Streams.Stream_Element_Array;
-			 Output_First: out    Ada.Streams.Stream_Element_Offset;
-			 Output_Last:  out    Ada.Streams.Stream_Element_Offset)
+			 Input:        in     Stream_Element_Array;
+			 Num_Consumed: out    Stream_Element_Offset;
+			 Buffer:       in out Stream_Element_Array;
+			 Output_First: out    Stream_Element_Offset;
+			 Output_Last:  out    Stream_Element_Offset)
 	is
-		use type Ada.Streams.Stream_Element_Offset;
-		Input_Conv:        Octets(0 .. Input'Length - 1);
-		for Input_Conv'Address use Input'Address;
-		Buffer_Conv:       Octets(0 .. Buffer'Length - 1);
-		for Buffer_Conv'Address use Buffer'Address;
-		First_Conv:        Integer;
-		Last_Conv:         Integer;
+		Input_Cnv:  Octets(0 .. Input'Length - 1);
+				for Input_Cnv'Address use Input'Address;
+		Buffer_Cnv: Octets(0 .. Buffer'Length - 1);
+				for Buffer_Cnv'Address use Buffer'Address;
+		First_Cnv:  Integer;
+		Last_Cnv:   Integer;
 	begin
-		Ctx.Update(Input_Conv, Integer(Num_Consumed), Buffer_Conv,
-							First_Conv, Last_Conv);
-		Output_First := Buffer'First +
-				Ada.Streams.Stream_Element_Offset(First_Conv);
-		Output_Last  := Buffer'First +
-				Ada.Streams.Stream_Element_Offset(Last_Conv);
+		Ctx.Update(Input_Cnv, Integer(Num_Consumed), Buffer_Cnv,
+							First_Cnv, Last_Cnv);
+		Output_First := Buffer'First + Stream_Element_Offset(First_Cnv);
+		Output_Last  := Buffer'First + Stream_Element_Offset(Last_Cnv);
 	end Update;
 
 	------------------------------------------------------------------------
@@ -58,110 +49,224 @@ package body LZ4Ada is
 	------------------------------------------------------------------------
 	------------------------------------------------------------------------
 
-	function Init  (Input:           in Octets;
-			Num_Consumed:    out Integer;
-			Min_Buffer_Size: out Integer)
+	function Init(Min_Buffer_Size:   out    Integer;
+			Reservation:     in     Memory_Reservation := For_All)
 			return Decompressor is
+		Block_Max_Size: constant Integer := Get_Block_Size(Reservation);
+	begin
+		-- +8 for overcopy optimization
+		Min_Buffer_Size := Block_Max_Size + History_Size + 8;
+		return (M => (Memory_Reservation => Reservation, others => <>),
+			-- Per spec, the declared size excludes block size +
+			-- optional checksum fields. Hence add their sizes here!
+			-- Since we do not know if there will be a block
+			-- checksum appearing, always reserve 4 bytes for it.
+			In_Last => Block_Max_Size + 4 + Block_Size_Bytes - 1,
+			Hash_All_Data => LZ4Ada.XXHash32.Init,
+			others => <>);
+	end Init;
 
-		function "*"(Flag: in Boolean; Num: in Integer)
-				return Integer is (if Flag then Num else 0);
+	function Get_Block_Size(R: in Memory_Reservation) return Integer is
+		KiB: constant Integer := 1024;
+		MiB: constant Integer := 1024 * KiB;
+		LUT: constant array (Memory_Reservation) of Integer := (
+				SZ_64_KiB  => 64  * KiB,
+				SZ_256_KiB => 256 * KiB,
+				SZ_1_MiB   => 1   * MiB,
+				SZ_4_MiB   => 4   * MiB,
+				SZ_8_MiB   => 8   * MiB
+			);
+	begin
+		return LUT(R);
+	end Get_Block_Size;
 
-		Magic_NB: constant U32 := Load_32(Input(Input'First
-							.. Input'First + 3));
-		FLG:                   constant U8 := Input(Input'First + 4);
-		BD:                    constant U8 := Input(Input'First + 5);
-		FLG_Block_Checksum:    constant Boolean := ((FLG and 16) /= 0);
-		FLG_Content_Size:      constant Boolean := ((FLG and  8) /= 0);
-		FLG_Content_Checksum:  constant Boolean := ((FLG and  4) /= 0);
-		FLG_Reserved:          constant Boolean := ((FLG and  2) /= 0);
-		FLG_Dictionary_ID:     constant Boolean := ((FLG and  1) /= 0);
-		FLG_Version:           constant U8      := Shift_Right(FLG and
-								16#c0#, 6);
-		BD_Block_Max_Size: constant U8 := Shift_Right(BD and 16#70#, 4);
-		BD_Has_Reserved:   constant Boolean := ((BD and 16#8f#) /= 0);
+	function Init_With_Header(Input: in  Octets;
+			Num_Consumed:    out Integer;
+			Min_Buffer_Size: out Integer;
+			Reservation:     in  Flexible_Memory_Reservation
+								:= Single_Frame)
+			return Decompressor is
+		Header_Buffer:  Octets(0 .. 19); -- 20 byte buffer = large enough
+		Input_Pos:      Integer := Input'First;
+		MT:             Decompressor_Meta := (Memory_Reservation =>
+						Reservation, others => <>);
+		Consumed_Inner: Integer;
+		Block_Max_Size: Integer;
+		In_Last_Comp:   Integer;
+	begin
+		Num_Consumed := 0;
+		while MT.Header_Parsing /= Header_Complete loop
+			if Input_Pos > Input'Last then
+				raise Data_Too_Small with
+					"Expected at least " &
+					U64'Image(MT.Size_Remaining) &
+					"more bytes but header input has " &
+					"already ended.";
+			end if;
+			Process_Header_Bytes(MT, Header_Buffer,
+						Input(Input_Pos .. Input'Last),
+						Consumed_Inner);
+			if Consumed_Inner = 0 then
+				raise No_Progress with
+					"Provided header data was not " &
+					"processed.";
+			end if;
+			Input_Pos    := Input_Pos    + Consumed_Inner;
+			Num_Consumed := Num_Consumed + Consumed_Inner;
+		end loop;
+		Block_Max_Size  := Get_Block_Size(MT.Memory_Reservation);
+		In_Last_Comp    := Block_Max_Size + MT.Block_Checksum_Length +
+							Block_Size_Bytes - 1;
+		Min_Buffer_Size := Block_Max_Size + History_Size + 8;
+		if Reservation = Single_Frame then
+			MT.Memory_Reservation := Single_Frame;
+		end if;
+		return (M => MT, In_Last => In_Last_Comp,
+			Hash_All_Data => LZ4Ada.XXHash32.Init, others => <>);
+	end Init_With_Header;
 
-		Block_Checksum_Size:   Integer := FLG_Block_Checksum   * 4;
-		Content_Checksum_Size: Integer := FLG_Content_Checksum * 4;
-		Cursor:                Integer := Input'First + 6;
-		Content_Size:          U64     := 0;
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
+	------------------------------------------------------------  HEADER  --
+	------------------------------------------------------------------------
+	------------------------------------------------------------------------
 
-		Declared_Format:       Format;
-		Block_Max_Size:        Integer;
-		Status_End_Of_Frame:   End_Of_Frame;
+	procedure Process_Header_Bytes(M: in out Decompressor_Meta;
+				Input_Buffer: in out Octets; Input: in Octets;
+				Num_Consumed: out Integer) is
+		Copy_Length: constant Integer := Integer'Min(Input'Length,
+						Integer(M.Size_Remaining));
+	begin
+		Ada.Assertions.Assert(Copy_Length > 0);
+		Input_Buffer(M.Input_Buffer_Filled ..
+			M.Input_Buffer_Filled + Copy_Length - 1) :=
+			Input(Input'First .. Input'First + Copy_Length - 1);
+		M.Input_Buffer_Filled := M.Input_Buffer_Filled + Copy_Length;
+		M.Size_Remaining      := M.Size_Remaining - U64(Copy_Length);
+		Num_Consumed          := Copy_Length;
+		if M.Size_Remaining = 0 then
+			case M.Header_Parsing is
+			when Need_Magic =>
+				Process_Header_Magic(M, Input_Buffer);
+			when Need_Flags =>
+				Process_Header_Flags(M, Input_Buffer);
+			when Need_Modern =>
+				Process_Modern_End_Of_Header(M, Input_Buffer);
+			when Need_Skippable_Length =>
+				M.Header_Parsing := Header_Complete;
+				M.Size_Remaining := U64(Load_32(Input_Buffer
+								(4 .. 7)));
+				M.Status_EOF     := (if M.Size_Remaining = 0
+							then Yes else No);
+			when Header_Complete =>
+				raise Constraint_Error with
+					"Header_Complete case must not be " &
+					"reached while processing header " &
+					"bytes. Library bug detected.";
+			end case;
+			if M.Header_Parsing = Header_Complete then
+				M.Input_Buffer_Filled := 0;
+			end if;
+		end if;
+	end Process_Header_Bytes;
+
+	procedure Process_Header_Magic(M: in out Decompressor_Meta;
+						Input_Buffer: in Octets) is
+		Magic_NB: constant U32 := Load_32(Input_Buffer(0 .. 3));
+		Effective_Reservation: Memory_Reservation := For_Legacy;
 	begin
 		case Magic_NB is
 		when Magic_Modern =>
-			Declared_Format := Modern;
-			-- Even if data size is 0, this frame can still contain
-			-- data. Process such data.
-			Status_End_Of_Frame := No;
-			Check_Flag_Validity(FLG_Version, FLG_Reserved or
-							BD_Has_Reserved);
-			Block_Max_Size := Block_Size_Table(BD_Block_Max_Size);
-
-			-- record content size if available
-			if FLG_Content_Size then
-				Content_Size := Load_64(Input(Cursor ..
-								Cursor + 7));
-				Cursor       := Cursor + 8;
-			end if;
-
-			-- skip over dictionary ID
-			Cursor := Cursor + FLG_Dictionary_ID * 4;
-
-			-- +4 since FrameDescriptor excludes magic per spec.
-			Check_Header_Checksum(Input(Input'First + 4 ..
-						Cursor - 1), Input(Cursor));
-			Num_Consumed := Cursor - Input'First + 1;
+			M.Is_Format               := Modern;
+			M.Header_Parsing          := Need_Flags;
+			M.Size_Remaining          := 2;
 		when Magic_Legacy =>
-			Declared_Format        := Legacy;
-			Status_End_Of_Frame    := Maybe;
-			Block_Max_Size         := 8 * 1024 * 1024;
-			Block_Checksum_Size    := 0;
-			Content_Checksum_Size  := 0;
-			Num_Consumed           := 4;
+			M.Is_Format               := Legacy;
+			M.Header_Parsing          := Header_Complete;
+			M.Size_Remaining          := 0;
+			M.Status_EOF              := Maybe;
+			M.Block_Checksum_Length   := 0;
+			M.Content_Checksum_Length := 0;
+			M.Has_Content_Size        := False;
+			M.Size_Remaining          := 0;
+			M.Is_Compressed           := True;
+			Check_Reservation(M.Memory_Reservation,
+							Effective_Reservation);
+			M.Memory_Reservation := Effective_Reservation;
 		when 16#184d2a50# .. 16#184d2a5f# =>
-			Declared_Format        := Skippable;
-			Block_Max_Size         := 0;
-			Block_Checksum_Size    := 0;
-			Content_Checksum_Size  := 0;
-			Num_Consumed           := 8;
-			Content_Size           := U64(Load_32(
-							Input(Input'First + 4 ..
-							Input'First + 7)));
-			Status_End_Of_Frame    := (if Content_Size = 0
-							then Yes else No);
-		when others => raise Not_Supported with
-			"Invalid or unsupported magic: 0x" & To_Hex(Magic_NB);
-		end case;
-		-- +8 for overcopy optimization
-		Min_Buffer_Size := Block_Max_Size + History_Size + 8;
-		return (
-			Is_Format               => Declared_Format,
-			-- Per spec, the declared size excludes block size +
-			-- optional checksum fields. Hence add their sizes here!
-			In_Last                 => Block_Max_Size +
-							Block_Checksum_Size +
-							Block_Size_Bytes - 1,
-			Block_Checksum_Length   => Block_Checksum_Size,
-			Content_Checksum_Length => Content_Checksum_Size,
-			Is_At_End_Mark          => False,
-			Status_EOF              => Status_End_Of_Frame,
-			Input_Buffer            => (others => 0),
-			Input_Buffer_Filled     => 0,
-			Input_Length            => -1,
-			Output_Pos              => 0,
-			Output_Pos_History      => 0,
+			M.Is_Format               := Skippable;
+			M.Header_Parsing          := Need_Skippable_Length;
+			M.Size_Remaining          := 4;
+			M.Block_Checksum_Length   := 0;
+			M.Content_Checksum_Length := 0;
 			-- No need to set this for skippable, since it is always
-			-- assumed that Content_Size_Remaining contains a value
+			-- assumed that Size_Remaining contains a value
 			-- for Skippable frames
-			Has_Content_Size        => (Declared_Format = Modern
-							and FLG_Content_Size),
-			Content_Size_Remaining  => Content_Size,
-			Is_Compressed           => (Declared_Format = Legacy),
-			Hash_All_Data           => LZ4Ada.XXHash32.Init
-		);
-	end Init;
+			-- M.Has_Content_Size:=False; M.Is_Compressed:=False;
+		when others => 
+			raise Not_Supported with "Invalid or unsupported " &
+						"magic: 0x" & To_Hex(Magic_NB);
+		end case;
+	end Process_Header_Magic;
+
+	procedure Check_Reservation(Requested: in Flexible_Memory_Reservation;
+					Effective: in out Memory_Reservation) is
+	begin
+		if Requested in Memory_Reservation then
+			if Effective > Requested then
+				raise Data_Too_Large with
+					"LZ4 header requres reservation " &
+					Memory_Reservation'Image(Effective) &
+					", but API call requested that only " &
+					Flexible_Memory_Reservation'Image(
+					Requested) & " be used. This frame " &
+					"cannot be processed under the given " &
+					"constraints.";
+			else
+				-- Upgrade to the provided parameter
+				-- (or do nothing of they match)
+				Effective := Requested;
+			end if;
+		end if;
+	end Check_Reservation;
+
+	procedure Process_Header_Flags(M: in out Decompressor_Meta;
+						Input_Buffer: in Octets) is
+		function "*"(Flag: in Boolean; Num: in Integer)
+				return Integer is (if Flag then Num else 0);
+
+		FLG:              constant U8      := Input_Buffer(4);
+		BD:               constant U8      := Input_Buffer(5);
+		FLG_Block_Chck:   constant Boolean := ((FLG and 16) /= 0);
+		FLG_Content_Chck: constant Boolean := ((FLG and  4) /= 0);
+		FLG_Reserved:     constant Boolean := ((FLG and  2) /= 0);
+		FLG_Dictionary:   constant Boolean := ((FLG and  1) /= 0);
+		FLG_Version:      constant U8 := Shift_Right(FLG and 16#c0#, 6);
+		BD_Block_Max_SZ:  constant U8 := Shift_Right(BD  and 16#70#, 4);
+		BD_Has_Reserved:  constant Boolean := ((BD and 16#8f#) /= 0);
+		Required_Reservation:      Memory_Reservation;
+	begin
+		Check_Flag_Validity(FLG_Version, FLG_Reserved or
+							BD_Has_Reserved);
+
+		-- Even if data size is 0, this frame can still contain data.
+		-- Process such data by setting Status_EOF := No unconditionally
+		M.Status_EOF         := No;
+		Required_Reservation := Get_Block_Size_Reservation(
+							BD_Block_Max_SZ);
+		M.Block_Checksum_Length   := FLG_Block_Chck   * 4;
+		M.Content_Checksum_Length := FLG_Content_Chck * 4;
+		M.Has_Content_Size   := ((FLG and 8) /= 0);
+		M.Header_Parsing     := Need_Modern;
+		-- for now still tracks the header bytes to come
+		M.Size_Remaining     := U64(1 + M.Has_Content_Size * 8 +
+							FLG_Dictionary * 4);
+
+		Check_Reservation(M.Memory_Reservation, Required_Reservation);
+		if M.Memory_Reservation /= Single_Frame then
+			M.Memory_Reservation := Required_Reservation;
+		end if;
+	end Process_Header_Flags;
 
 	procedure Check_Flag_Validity(FLG_Version: in U8;
 							Reserved: in Boolean) is
@@ -179,18 +284,39 @@ package body LZ4Ada is
 		end if;
 	end Check_Flag_Validity;
 
-	function Block_Size_Table(BD_Block_Max_Size: in U8) return Integer is
+	function Get_Block_Size_Reservation(BD_Block_Max_SZ: in U8)
+						return Memory_Reservation is
 	begin
-		case BD_Block_Max_Size is
-		when 4      => return       64 * 1024; -- 64 KiB
-		when 5      => return      256 * 1024; -- 256 KiB
-		when 6      => return     1024 * 1024; -- 1 MiB
-		when 7      => return 4 * 1024 * 1024; -- 4 MiB
+		case BD_Block_Max_SZ is
+		when 4      => return SZ_64_KiB;
+		when 5      => return SZ_256_KiB;
+		when 6      => return SZ_1_MiB;
+		when 7      => return SZ_4_MiB;
 		when others => raise Not_Supported with
 					"Unknown maximum block size flag: 0x" &
-					To_Hex(BD_Block_Max_Size);
+					To_Hex(BD_Block_Max_SZ);
 		end case;
-	end Block_Size_Table;
+	end Get_Block_Size_Reservation;
+
+	procedure Process_Modern_End_Of_Header(M: in out Decompressor_Meta;
+						Input_Buffer: in Octets) is
+		Checksum_Byte: constant U8 :=
+				Input_Buffer(M.Input_Buffer_Filled - 1);
+	begin
+		if M.Has_Content_Size then
+			M.Size_Remaining := Load_64(Input_Buffer(6 .. 13));
+		end if;
+		-- offset 4 since FrameDescriptor excludes magic per spec.
+		Check_Header_Checksum(Input_Buffer(4 ..
+				M.Input_Buffer_Filled - 2), Checksum_Byte);
+		M.Header_Parsing := Header_Complete;
+	end Process_Modern_End_Of_Header;
+
+	function Load_64(Data: in Octets) return U64 is
+		Ret: U64; for Ret'Address use Data'Address;
+	begin
+		return Ret;
+	end Load_64;
 
 	procedure Check_Header_Checksum(Data: in Octets; HC: in U8) is
 		Computed_HC: constant U8 := U8(Shift_Right(LZ4Ada.XXHash32.Hash(
@@ -212,19 +338,11 @@ package body LZ4Ada is
 	end To_Hex;
 
 	function To_Hex(Num: in U32) return String is
-		Conv: Octets(0 .. 3);
-		for Conv'Address use Num'Address;
+		Conv: Octets(0 .. 3); for Conv'Address use Num'Address;
 	begin
 		return To_Hex(Conv(3)) & To_Hex(Conv(2)) & To_Hex(Conv(1)) &
 								To_Hex(Conv(0));
 	end To_Hex;
-
-	function Load_64(Data: in Octets) return U64 is
-		Ret: U64;
-		for Ret'Address use Data'Address;
-	begin
-		return Ret;
-	end Load_64;
 
 	------------------------------------------------------------------------
 	------------------------------------------------------------------------
@@ -242,62 +360,67 @@ package body LZ4Ada is
 		Num_Consumed := 0;
 		Output_First := 1;
 		Output_Last  := 0;
-
-		if Ctx.Is_Format = Skippable then
+		if Ctx.M.Header_Parsing /= Header_Complete then
+			Process_Header_Bytes(Ctx.M, Ctx.Input_Buffer, Input,
+								Num_Consumed);
+		elsif Ctx.M.Is_Format = Skippable then
 			Ctx.Skip(Input, Num_Consumed);
-		elsif Ctx.Is_At_End_Mark then
-			Ctx.Check_End_Mark(Input, Num_Consumed);
-		elsif Ctx.Input_Length /= -1 then
-			Ctx.Cache_Data_And_Process_If_Full(Input, Num_Consumed,
-					Buffer, Output_First, Output_Last);
 		else
-			Ctx.Try_Detect_Input_Length(Input, Num_Consumed);
+			Ada.Assertions.Assert(Ctx.M.Is_Format /= TBD);
 			if Ctx.Is_At_End_Mark then
 				Ctx.Check_End_Mark(Input, Num_Consumed);
 			elsif Ctx.Input_Length /= -1 then
-				Ctx.Handle_Newly_Known_Input_Length(Input,
-						Num_Consumed, Buffer,
+				Ctx.Cache_Data_And_Process_If_Full(Input,
+					Num_Consumed, Buffer, Output_First,
+					Output_Last);
+			else
+				Ctx.Try_Detect_Input_Length(Input,
+								Num_Consumed);
+				if Ctx.Is_At_End_Mark then
+					Ctx.Check_End_Mark(Input, Num_Consumed);
+				elsif Ctx.Input_Length /= -1 then
+					Ctx.Handle_Newly_Known_Input_Length(
+						Input, Num_Consumed, Buffer,
 						Output_First, Output_Last);
+				end if;
 			end if;
 		end if;
 	end Update;
 
 	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: out Integer) is
-		Remain:   constant U64 := Ctx.Content_Size_Remaining;
+		Remain:   constant U64 := Ctx.M.Size_Remaining;
 		Consumed: constant U64 := U64'Min(U64(Input'Length), Remain);
 	begin
-		if Ctx.Status_EOF = Yes and Consumed = 0 then
+		if Ctx.M.Status_EOF = Yes and Consumed = 0 then
 			raise No_Progress with
 					"Skippable frame has ended already.";
 		end if;
-		Num_Consumed               := Integer(Consumed);
-		Ctx.Content_Size_Remaining := Remain - Consumed;
-		Ctx.Status_EOF             := (if Ctx.Content_Size_Remaining = 0
-							then Yes else No);
+		Num_Consumed := Integer(Consumed);
+		Ctx.M.Size_Remaining := Remain - Consumed;
+		Ctx.M.Status_EOF := (if Ctx.M.Size_Remaining = 0 then Yes else No);
 	end Skip;
 
 	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: in out Integer) is
 		procedure Set_Frame_Has_Ended is
 		begin
-			Ctx.Status_EOF := Yes;
-			if Ctx.Has_Content_Size and
-					Ctx.Content_Size_Remaining /= 0 then
+			Ctx.M.Status_EOF := Yes;
+			if Ctx.M.Has_Content_Size and Ctx.M.Size_Remaining /= 0 then
 				raise Data_Corruption with
 					"Frame has ended, but according to " &
 					"content size, there should be " &
-					U64'Image(Ctx.Content_Size_Remaining) &
+					U64'Image(Ctx.M.Size_Remaining) &
 					" bytes left to output.";
 			end if;
 		end Set_Frame_Has_Ended;
 
 		Provided_Len: constant Integer := Input'Length - Num_Consumed;
-		Required_Len: constant Integer := Ctx.Content_Checksum_Length -
-							Ctx.Input_Buffer_Filled;
+		Required_Len: constant Integer := Ctx.M.Content_Checksum_Length
+						- Ctx.M.Input_Buffer_Filled;
 	begin
-		if Ctx.Content_Checksum_Length = 0 or Required_Len <= 0 then
-			if Ctx.Status_EOF = Yes and Num_Consumed = 0 then
+		if Ctx.M.Content_Checksum_Length = 0 or Required_Len <= 0 then
+			if Ctx.M.Status_EOF = Yes and Num_Consumed = 0 then
 				raise No_Progress with
 						"End mark already processed.";
 			end if;
@@ -306,7 +429,7 @@ package body LZ4Ada is
 			declare
 				Checksum: constant U32 := Load_32(
 					Ctx.Input_Buffer(0 ..
-						Ctx.Input_Buffer_Filled - 1) &
+						Ctx.M.Input_Buffer_Filled - 1) &
 					Input(Input'First + Num_Consumed ..
 						Input'First + Num_Consumed +
 						Required_Len - 1)
@@ -326,11 +449,11 @@ package body LZ4Ada is
 			end;
 			Set_Frame_Has_Ended;
 		else
-			Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
-					Ctx.Input_Buffer_Filled +
+			Ctx.Input_Buffer(Ctx.M.Input_Buffer_Filled ..
+					Ctx.M.Input_Buffer_Filled +
 					Provided_Len - 1) :=
 				Input(Input'First + Num_Consumed .. Input'Last);
-			Ctx.Input_Buffer_Filled := Ctx.Input_Buffer_Filled +
+			Ctx.M.Input_Buffer_Filled := Ctx.M.Input_Buffer_Filled +
 							Provided_Len;
 			Num_Consumed := Num_Consumed + Provided_Len;
 		end if;
@@ -349,30 +472,28 @@ package body LZ4Ada is
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer) is
 		Additional_Length: constant Integer :=
-				Block_Size_Bytes + Ctx.Block_Checksum_Length;
+				Block_Size_Bytes + Ctx.M.Block_Checksum_Length;
 		Length_Word: U32;
 	begin
 		Num_Consumed := Integer'Min(Block_Size_Bytes -
-					Ctx.Input_Buffer_Filled, Input'Length);
-		Ctx.Input_Buffer(Ctx.Input_Buffer_Filled ..
-			Ctx.Input_Buffer_Filled + Num_Consumed - 1) :=
+					Ctx.M.Input_Buffer_Filled, Input'Length);
+		Ctx.Input_Buffer(Ctx.M.Input_Buffer_Filled ..
+			Ctx.M.Input_Buffer_Filled + Num_Consumed - 1) :=
 			Input(Input'First .. Input'First + Num_Consumed - 1);
-		Ctx.Input_Buffer_Filled :=
-			Ctx.Input_Buffer_Filled + Num_Consumed;
+		Ctx.M.Input_Buffer_Filled :=
+			Ctx.M.Input_Buffer_Filled + Num_Consumed;
 
-		if Ctx.Input_Buffer_Filled = Block_Size_Bytes then
+		if Ctx.M.Input_Buffer_Filled = Block_Size_Bytes then
 			Length_Word := Load_32(Ctx.Input_Buffer(0 ..
 							Block_Size_Bytes - 1));
-			if Ctx.Is_Format = Modern and Length_Word = 0 then
+			if Ctx.M.Is_Format = Modern and Length_Word = 0 then
 				Ctx.Is_At_End_Mark      := True;
-				Ctx.Input_Buffer_Filled := 0;
+				Ctx.M.Input_Buffer_Filled := 0;
 				return;
 			-- TODO IS IT CORRECT TO CHECK FOR LEGACY MAGIC HERE OR WOULD WE RATHER CHECK FOR ANY OF THE ALLOWED MAGIC SEQUENCES? IT DOES NOT MATTER FOR THE TEST DATA SO FAR BECAUSE NEITHER LOGIC TRIGGERS THE CONDITION TO BECOME TRUE. NEED MORE TEST DATA FOR THIS ONE. CAN TEST THIS WITH "ONE BYTE AT A TIME MODE"
-			elsif Ctx.Is_Format = Legacy and
+			elsif Ctx.M.Is_Format = Legacy and
 						Length_Word = Magic_Legacy then
 				Ctx.Is_At_End_Mark := True;
-				Ada.Text_IO.Put_Line("Num_Consumed = " &
-						Integer'Image(Num_Consumed));
 				-- Unconsume this part from the next frame!
 				-- This can make the number of bytes consumed
 				-- negative because we actually want to tell the
@@ -387,10 +508,10 @@ package body LZ4Ada is
 				Num_Consumed := Num_Consumed - Block_Size_Bytes;
 				return;
 			end if;
-			if Ctx.Is_Format = Modern then
+			if Ctx.M.Is_Format = Modern then
 				-- Bit = 1 aka. set   means uncompressed.
 				-- Bit = 0 aka. unset means compressed.
-				Ctx.Is_Compressed := (
+				Ctx.M.Is_Compressed := (
 					(Length_Word and 16#80000000#) = 0);
 				Length_Word := Length_Word and 16#7ffffff#;
 			end if;
@@ -416,8 +537,8 @@ package body LZ4Ada is
 				Buffer: in out Octets;
 				Output_First: in out Integer;
 				Output_Last: in out Integer) is
-		Total_Length: constant Integer :=
-				Ctx.Input_Length + Ctx.Block_Checksum_Length;
+		Total_Length: constant Integer := Ctx.Input_Length +
+						Ctx.M.Block_Checksum_Length;
 	begin
 		if (Input'Length - Num_Consumed) >= Total_Length then
 			-- Supplied input is large enough to process right away
@@ -430,8 +551,8 @@ package body LZ4Ada is
 			begin
 				Num_Consumed := Num_Consumed +
 						Ctx.Input_Length +
-						Ctx.Block_Checksum_Length;
-				Ctx.Input_Buffer_Filled := 0;
+						Ctx.M.Block_Checksum_Length;
+				Ctx.M.Input_Buffer_Filled := 0;
 				Ctx.Input_Length        := -1;
 				Ctx.Decode_Full_Block_With_Trailer(Use_Input,
 					Buffer, Output_First, Output_Last);
@@ -454,22 +575,22 @@ package body LZ4Ada is
 			Output_Last: in out Integer) is
 		Avail:  constant Integer := Input'Length - Num_Consumed;
 		Want:   constant Integer := Ctx.Input_Length +
-						Ctx.Block_Checksum_Length -
-						Ctx.Input_Buffer_Filled +
+						Ctx.M.Block_Checksum_Length -
+						Ctx.M.Input_Buffer_Filled +
 						Block_Size_Bytes;
-		Fill:   constant Integer := Ctx.Input_Buffer_Filled;
+		Fill:   constant Integer := Ctx.M.Input_Buffer_Filled;
 		Offset: constant Integer := Input'First + Num_Consumed;
 	begin
 		if Want > Avail then
-			Ctx.Input_Buffer(Fill .. Fill + Avail - 1)
-						:= Input(Offset .. Input'Last);
-			Ctx.Input_Buffer_Filled := Ctx.Input_Buffer_Filled +
-									Avail;
-			Num_Consumed            := Num_Consumed + Avail;
+			Ctx.Input_Buffer(Fill .. Fill + Avail - 1) :=
+						Input(Offset .. Input'Last);
+			Ctx.M.Input_Buffer_Filled :=
+					Ctx.M.Input_Buffer_Filled + Avail;
+			Num_Consumed := Num_Consumed + Avail;
 		else
-			Num_Consumed            := Num_Consumed + Want;
-			Ctx.Input_Buffer_Filled := 0;
-			Ctx.Input_Length        := -1;
+			Num_Consumed := Num_Consumed + Want;
+			Ctx.M.Input_Buffer_Filled := 0;
+			Ctx.Input_Length := -1;
 			Ctx.Decode_Full_Block_With_Trailer(
 				Ctx.Input_Buffer(Block_Size_Bytes .. Fill - 1) &
 				Input(Offset .. Offset + Want - 1),
@@ -485,21 +606,21 @@ package body LZ4Ada is
 				Output_First: out    Integer;
 				Output_Last:  out    Integer) is
 		Last:     constant Integer := Input_Block'Last -
-						Ctx.Block_Checksum_Length;
+						Ctx.M.Block_Checksum_Length;
 		Raw_Data: constant Octets  := Input_Block(Input_Block'First ..
 									Last);
 	begin
-		if Ctx.Block_Checksum_Length > 0 then
+		if Ctx.M.Block_Checksum_Length > 0 then
 			Check_Checksum(Raw_Data, Load_32(Input_Block(
-				Input_Block'Last - Ctx.Block_Checksum_Length + 1
-				.. Input_Block'Last)));
+				Input_Block'Last - Ctx.M.Block_Checksum_Length
+				+ 1 .. Input_Block'Last)));
 		end if;
 
 		if Ctx.Output_Pos >= History_Size then
 			Ctx.Output_Pos := 0;
 		end if;
 
-		if Ctx.Is_Compressed then
+		if Ctx.M.Is_Compressed then
 			Ctx.Decompress_Full_Block(Raw_Data, Buffer,
 						Output_First, Output_Last);
 		else
@@ -528,7 +649,7 @@ package body LZ4Ada is
 
 	procedure Update_Checksum(Ctx: in out Decompressor; Outp: in Octets) is
 	begin
-		if Ctx.Content_Checksum_Length /= 0 then
+		if Ctx.M.Content_Checksum_Length /= 0 then
 			Ctx.Hash_All_Data.Update(Outp);
 		end if;
 	end Update_Checksum;
@@ -646,15 +767,15 @@ package body LZ4Ada is
 	procedure Decrease_Data_Size_Remaining(Ctx: in out Decompressor;
 							Data_Length: in U64) is
 	begin
-		if Ctx.Has_Content_Size then
-			if Ctx.Content_Size_Remaining < Data_Length then
+		if Ctx.M.Has_Content_Size then
+			if Ctx.M.Size_Remaining < Data_Length then
 				raise Data_Corruption with
 					"Produced content size exceeds " &
 					"declared content size. The supplied " &
 					"data is inconsistent.";
 			end if;
-			Ctx.Content_Size_Remaining :=
-				Ctx.Content_Size_Remaining - Data_Length;
+			Ctx.M.Size_Remaining := Ctx.M.Size_Remaining -
+								Data_Length;
 		end if;
 	end Decrease_Data_Size_Remaining;
 
@@ -724,8 +845,8 @@ package body LZ4Ada is
 	end Output_With_History;
 
 	function Is_End_Of_Frame(Ctx: in Decompressor) return End_Of_Frame is
-			(if Ctx.Is_Format = Legacy and Ctx.Is_At_End_Mark
-			then Maybe else Ctx.Status_EOF);
+			(if Ctx.M.Is_Format = Legacy and Ctx.Is_At_End_Mark
+			then Maybe else Ctx.M.Status_EOF);
 
 	------------------------------------------------------------------------
 	------------------------------------------------------------------------
@@ -735,7 +856,7 @@ package body LZ4Ada is
 
 	package body XXHash32 is
 
-		function Init(Seed: in U32) return Hasher is
+		function Init(Seed: in U32 := 0) return Hasher is
 		begin
 			return (State_0      => Seed + Prime_1 + Prime_2,
 				State_1      => Seed + Prime_2,
@@ -784,8 +905,7 @@ package body LZ4Ada is
 		end Update1;
 
 		procedure Process(Ctx: in out Hasher; Data: in Octets) is
-			B: Array(0..3) of U32;
-			for B'Address use Data'Address;
+			B: Array(0..3) of U32; for B'Address use Data'Address;
 
 			procedure Rot_Mul(S: in out U32; B: in U32) is
 			begin

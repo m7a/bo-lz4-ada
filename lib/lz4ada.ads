@@ -32,6 +32,7 @@
 -- SOFTWARE.
 
 with Ada.Streams;
+use  Ada.Streams;
 with Interfaces;
 use  Interfaces;
 
@@ -50,8 +51,6 @@ use  Interfaces;
 -- work out-of-the box for you -- feel free to submit patches for this, though!
 package LZ4Ada is
 
-	-- The performance penalties of enabling these checks were found to be
-	-- acceptable.
 	pragma Assertion_Policy(Pre => Check, Post => Check);
 
 	subtype U8  is Interfaces.Unsigned_8;
@@ -59,163 +58,55 @@ package LZ4Ada is
 	subtype U64 is Interfaces.Unsigned_64;
 	type Octets is array (Integer range <>) of U8;
 
-	-- The end of frame status can have three states
-	--
-	-- Yes:
-	--	The currently processed frame is a “modern” format frame
-	--	and as such, it can indicate when no more data fóllows.
-	--	End_Of_Frame = Yes means that this condition has been reached.
-	-- No:
-	--	The Decompressor context has currently “unfinished” data to
-	--	process or the current frame is “modern” and end-of-frame has
-	--	not been indicated yet.
-	-- Maybe:
-	--	The Decompressor context has an empty input buffer and is at
-	--	the end of a block and the current frame format is legacy.
-	--	This _could_ mean that no more data is to be processed. Since
-	--	legacy format does not guarantee this, though, `Maybe` is
-	--	reported.
+	type Flexible_Memory_Reservation is (SZ_64_KiB, SZ_256_KiB, SZ_1_MiB,
+				SZ_4_MiB, SZ_8_MiB, Use_First, Single_Frame);
+	subtype Memory_Reservation is Flexible_Memory_Reservation range
+							SZ_64_KiB .. SZ_8_MiB;
+	For_Modern: constant Memory_Reservation := SZ_4_MiB;
+	For_Legacy: constant Memory_Reservation := SZ_8_MiB;
+	For_All:    constant Memory_Reservation := SZ_8_MiB;
+
 	type End_Of_Frame is (Yes, No, Maybe);
 
-	-- This exception is raised whenever an LZ4 checksum does not match.
-	-- The library does not currently support bypassing the checksum
-	-- verification (it is theoretically possible to remove checksums from
-	-- the input data and then decode the remaining data, though).
 	Checksum_Error:  exception;
-
-	-- This exception is raised whenever internal assumptions of the LZ4
-	-- frame or block format are violated. It indicates non-LZ4 or corrupted
-	-- input data.
 	Data_Corruption: exception;
-
-	-- This exception is raised whenever values observed that the LZ4
-	-- specification reports as reserved. As such, the values could indicate
-	-- newer data formats/features being in use. As this need not be
-	-- corrupted data but could be a valid new extension of the format,
-	-- a dedicated Not_Supported exception is raised in this case.
 	Not_Supported:   exception;
-
-	-- This exception is raised whenever `Update` is called again after an
-	-- end of frame condition has already been reached and was possible to
-	-- detect by the library user already. If the library user's
-	-- implementation ensures proper termination even in cases where none of
-	-- the supplied data is consumed _and also_ no new output is generated
-	-- then it may be safe to ignore this exception. In this sense it can be
-	-- seen as conceptually similar but not exactly equal to the `End_Error`
-	-- from the Ada Standard Library. It is recommended to design
-	-- applications in way that this exception is not relied on, though.
-	-- Depending on implementation, this exception can occur when
-	-- implementations which expect to process only a single frame are
-	-- provided with data that consists of multiple frames. In these cases,
-	-- the `No_Progress` exception is expected to be handled similar to
-	-- a data corruption.
+	Data_Too_Large:  exception;
+	Data_Too_Small:  exception;
 	No_Progress:     exception;
 
 	type Decompressor(In_Last: Integer) is tagged limited private;
 
-	-- Initializes a new Decompressor capable of decompressing an entire
-	-- LZ4 frame.
-	--
-	-- @param Input
-	-- 	The first input bytes. Need to supply enough such that the
-	--	entire frame header can be processed.
-	-- @param Num_Consumed
-	-- 	Returns the number of input bytes processed
-	-- @param Min_Buffer_Size
-	-- 	Returns the minimum length of output buffers for decoding this
-	--	LZ4 frame. The buffer size returned is not expected to take more
-	--	than a single output block at a time. It is usually not useful
-	--	to chose a larger buffer size than the reported minimum buffer
-	--	size.
-	-- @return
-	--	Decompressor context
-	function Init  (Input:           in  Octets;
-			Num_Consumed:    out Integer;
-			Min_Buffer_Size: out Integer)
+	function Init(Min_Buffer_Size:   out    Stream_Element_Offset;
+			Reservation:     in     Memory_Reservation := For_All)
+			return Decompressor;
+
+	procedure Update(Ctx:            in out Decompressor;
+			Input:           in     Stream_Element_Array;
+			Num_Consumed:    out    Stream_Element_Offset;
+			Buffer:          in out Stream_Element_Array;
+			Output_First:    out    Stream_Element_Offset;
+			Output_Last:     out    Stream_Element_Offset);
+
+	function Init(Min_Buffer_Size:   out    Integer;
+			Reservation:     in     Memory_Reservation := For_All)
+			return Decompressor;
+
+	function Init_With_Header(Input: in     Octets;
+			Num_Consumed:    out    Integer;
+			Min_Buffer_Size: out    Integer;
+			Reservation:     in     Flexible_Memory_Reservation
+								:= Single_Frame)
 			return Decompressor with Pre => Input'Length >= 7;
 
-	-- Initializes a new Decompressor using Stream_Element_Array/_Offset
-	-- data types rather than the library-internal custom data types.
-	function Init  (Input:           in  Ada.Streams.Stream_Element_Array;
-			Num_Consumed:    out Ada.Streams.Stream_Element_Offset;
-			Min_Buffer_Size: out Ada.Streams.Stream_Element_Offset)
-			return Decompressor with Pre => Input'Length >= 7;
-
-	-- Decompress data using an “Octets”-based API
-	--
-	-- @param Ctx
-	--	Decompressor Context
-	-- @param Input
-	--	Any positive (> 0) number of input bytes 
-	-- @param Num_Consumed
-	--	Reports how many bytes of the input data were processed. This
-	--	need not be the same as the number of input bytes supplied
-	--	because a small input can cause a large output making it
-	--	necessary to pause input data consumption early.
-	-- @param Buffer
-	--	Buffer maintained between repeated `Update` calls.
-	--	The buffer size should be at least `Min_Buffer_Size` and data in
-	--	the buffer should not be changed between calls to `Update`.
-	-- @param Output_First
-	--	Marks the index of the first octet of the decompressed data in
-	--	the output buffer (inclusive).
-	-- @param Output_Last
-	--	Marks the index of the last octet of the decompressed data in
-	--	the output buffer (inclusive).
-	procedure Update(Ctx:         in out Decompressor;
-			Input:        in     Octets;
-			Num_Consumed: out    Integer;
-			Buffer:       in out Octets;
-			Output_First: out    Integer;
-			Output_Last:  out    Integer)
+	procedure Update(Ctx:            in out Decompressor;
+			Input:           in     Octets;
+			Num_Consumed:    out    Integer;
+			Buffer:          in out Octets;
+			Output_First:    out    Integer;
+			Output_Last:     out    Integer)
 			with Pre => (Buffer'First = 0);
 
-	-- Decompress data uing a “Stream_Element_Array”-based API
-	--
-	-- @param Ctx
-	--	Decompressor Context
-	-- @param Input
-	--	Any positive (> 0) number of input bytes
-	-- @param Num_Consumed
-	--	After invocation, this is set to the number of input bytes
-	--	processed. Generally, this can be less than the supplied input
-	--	bytes.
-	-- @param Buffer
-	--	Buffer maintained between repeated `Update` calls.
-	--	The buffer size should be at least `Min_Buffer_Size` and data
-	--	in the buffer should not be changed between calls to `Update`.
-	-- @param Output_First
-	--	Index of the first octet of output in the Buffer (inclusive).
-	-- @param Output_Last
-	--	Index of the last octet of output in the Buffer (inclusive)
-	-- @param Frame_Ended
-	--	This Boolean is set to `True` when the LZ4 frame has ended.
-	--	This marks the end of the lifecycle of the Decompressor. To
-	--	process further frames, create a new Decompressor by calling
-	--	`Init`. Do not call `Update` again after receiving a
-	--	`Frame_Ended = True` outcome.
-	procedure Update(Ctx:         in out Decompressor;
-			Input:        in     Ada.Streams.Stream_Element_Array;
-			Num_Consumed: out    Ada.Streams.Stream_Element_Offset;
-			Buffer:       in out Ada.Streams.Stream_Element_Array;
-			Output_First: out    Ada.Streams.Stream_Element_Offset;
-			Output_Last:  out    Ada.Streams.Stream_Element_Offset);
-
-	-- Checks the end of frame status of the given Decompressor context.
-	--
-	-- Applications are encouraged to check that once the input data has
-	-- ended, this function does not return `No` because that indicates
-	-- a data corrpution.
-	--
-	-- @param Ctx
-	--	Decompressor to check
-	-- @return
-	--	Yes:    when this frame has definetely ended.
-	--	No:     when there is input data in the buffer that has not been
-	--	        processed yet.
-	--	Maybe:  when legacy format is processed and end of block is
-	--	        reached. Legacy format does not signal “end of frame”
-	--	        explicitly.
 	function Is_End_Of_Frame(Ctx: in Decompressor) return End_Of_Frame;
 
 	-- Useful routines for testing purposes. Not part of the stable API!
@@ -226,9 +117,8 @@ package LZ4Ada is
 	-- https://github.com/stbrumme/xxhash/blob/master/xxhash32.h
 	package XXHash32 is
 		type Hasher is tagged limited private;
-		-- Initialize the hash function. Without a Seed, `0` is used.
-		function  Init return Hasher;
-		function  Init(Seed: in U32) return Hasher;
+		-- Initialize the hash function.
+		function  Init(Seed: in U32 := 0) return Hasher;
 		-- Add data to process
 		procedure Update(Ctx: in out Hasher; Input: in Octets);
 		-- Compute Hash
@@ -257,8 +147,6 @@ package LZ4Ada is
 			Buffer_Size:  Integer;
 			Total_Length: U64;
 		end record;
-
-		function Init return Hasher is (Init(0));
 	end XXHash32;
 
 private
@@ -268,22 +156,53 @@ private
 	History_Size:     constant Integer := 64 * 1024;
 	Block_Size_Bytes: constant Integer := 4;
 
+	type Format is (TBD, Legacy, Modern, Skippable);
+	type Header_Parsing_State is (Need_Magic, Need_Modern, Need_Flags,
+					Need_Skippable_Length, Header_Complete);
+
+	type Decompressor_Meta is record
+		Is_Format:               Format               := TBD;
+		Header_Parsing:          Header_Parsing_State := Need_Magic;
+		Memory_Reservation:      Flexible_Memory_Reservation;
+		Content_Checksum_Length: Integer              := 0; -- 0 or 4
+		Block_Checksum_Length:   Integer              := 0; -- 0 or 4
+		Status_EOF:              End_Of_Frame         := No;
+		Input_Buffer_Filled:     Integer              := 0;
+		Is_Compressed:           Boolean              := False;
+		Has_Content_Size:        Boolean              := False;
+		Size_Remaining:          U64                  := 4;
+	end record;
+
 	-- Forward declarations
-	procedure Check_Flag_Validity(FLG_Version: in U8;
-							Reserved: in Boolean);
-	function Block_Size_Table(BD_Block_Max_Size: in U8) return Integer;
-	procedure Check_Header_Checksum(Data: in Octets; HC: in U8);
+	function Get_Block_Size(R: in Memory_Reservation) return Integer;
+	procedure Process_Header_Bytes(M: in out Decompressor_Meta;
+				Input_Buffer: in out Octets; Input: in Octets;
+				Num_Consumed: out Integer)
+				with Pre => M.Header_Parsing /= Header_Complete;
+	procedure Process_Header_Magic(M: in out Decompressor_Meta;
+						Input_Buffer: in Octets);
+	procedure Process_Header_Flags(M: in out Decompressor_Meta;
+						Input_Buffer: in Octets);
+	procedure Check_Flag_Validity(FLG_Version: in U8; Reserved: in Boolean);
+	function Get_Block_Size_Reservation(BD_Block_Max_SZ: in U8)
+						return Memory_Reservation;
+	procedure Check_Reservation(Requested: in Flexible_Memory_Reservation;
+					Effective: in out Memory_Reservation);
+	procedure Process_Modern_End_Of_Header(M: in out Decompressor_Meta;
+						Input_Buffer: in Octets);
 	function Load_64(Data: in Octets) return U64
 						with Pre => Data'Length = 8;
+	procedure Check_Header_Checksum(Data: in Octets; HC: in U8);
+
 	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: out Integer);
 	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: in out Integer);
-	-- Num_Consumed = 0 predondition could be lifted by improving the code
+	-- Num_Consumed = 0 precondition could be lifted by improving the code
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer)
-			with Pre => (Ctx.Input_Buffer_Filled < Block_Size_Bytes
-					and Num_Consumed = 0);
+			with Pre => (Ctx.M.Input_Buffer_Filled <
+					Block_Size_Bytes and Num_Consumed = 0);
 	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
 				Input: in Octets; Num_Consumed: in out Integer;
 				Buffer: in out Octets;
@@ -315,23 +234,15 @@ private
 				Offset: in Integer; Match_Length: in Integer;
 				Buffer: in out Octets);
 
-	type Format is (Legacy, Modern, Skippable);
-
 	type Decompressor(In_Last: Integer) is tagged limited record
-		Is_Format:               Format;
-		Content_Checksum_Length: Integer; -- 0 or 4
-		Block_Checksum_Length:   Integer; -- 0 or 4
-		Is_At_End_Mark:          Boolean;
-		Status_EOF:              End_Of_Frame;
-		Input_Buffer:            Octets(0 .. In_Last);
-		Output_Pos:              Integer;
-		Output_Pos_History:      Integer;
-		Input_Buffer_Filled:     Integer; -- how much data is in there
-		Input_Length:            Integer; -- Declared current block len
-		Is_Compressed:           Boolean; -- current block compressed YN
-		Has_Content_Size:        Boolean;
-		Content_Size_Remaining:  U64;
-		Hash_All_Data:           LZ4Ada.XXHash32.Hasher;
+		M:                  Decompressor_Meta;
+		Is_At_End_Mark:     Boolean              := False;
+		Input_Buffer:       Octets(0 .. In_Last) := (others => 0);
+		Output_Pos:         Integer              := 0;
+		Output_Pos_History: Integer              := 0;
+		-- Declared current block length
+		Input_Length:       Integer              := -1;
+		Hash_All_Data:      LZ4Ada.XXHash32.Hasher;
 	end record;
 
 	function Load_32(Src: in Octets) return U32
