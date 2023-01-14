@@ -14,9 +14,11 @@ procedure UnLZ4Ada is
 		Ada.Text_IO.Text_Streams.Stream(Ada.Text_IO.Standard_Output);
 	
 	Buf_Input:      Stream_Element_Array(0 .. 4095);
-	Last:           Stream_Element_Offset := -1;
+	Buf_Input_Conv: LZ4Ada.Octets(0 .. Buf_Input'Length - 1);
+			for Buf_Input_Conv'Address use Buf_Input'Address;
+	Last:           Integer := -1;
 	Consumed:       Stream_Element_Offset;
-	Total_Consumed: Stream_Element_Offset := 0;
+	Total_Consumed: Integer := 0;
 	End_Of_Input:   Boolean := False;
 	EOF_Status:     LZ4Ada.End_Of_Frame;
 
@@ -25,9 +27,10 @@ procedure UnLZ4Ada is
 		Result_First: Stream_Element_Offset;
 		Result_Last:  Stream_Element_Offset;
 	begin
-		Ctx.Update(Buf_Input(Total_Consumed .. Last), Consumed,
-						Buf, Result_First, Result_Last);
-		Total_Consumed := Total_Consumed + Consumed;
+		Ctx.Update(Buf_Input(Stream_Element_Offset(Total_Consumed) ..
+					Stream_Element_Offset(Last)), Consumed,
+					Buf, Result_First, Result_Last);
+		Total_Consumed := Total_Consumed + Integer(Consumed);
 		EOF_Status     := Ctx.Is_End_Of_Frame;
 
 		-- Loop over input until something produced. When something was
@@ -42,7 +45,8 @@ procedure UnLZ4Ada is
 			-- was detected this hints towards a data corruption.
 			if EOF_Status /= LZ4Ada.Yes and
 						Total_Consumed > Last then
-				Read(Stdin.all, Buf_Input, Last);
+				Read(Stdin.all, Buf_Input,
+						Stream_Element_Offset(Last));
 				if Last < 0 then
 					End_Of_Input := True;
 					if EOF_Status = LZ4Ada.No then
@@ -59,10 +63,12 @@ procedure UnLZ4Ada is
 begin
 	while not End_Of_Input loop
 		if Last - Total_Consumed < 6 then
-			Buf_Input(0 .. Last - Total_Consumed) :=
-					Buf_Input(Total_Consumed .. Last);
-			Read(Stdin.all, Buf_Input(Last - Total_Consumed + 1 ..
-							Buf_Input'Last), Last);
+			Buf_Input_Conv(0 .. Last - Total_Consumed) :=
+					Buf_Input_Conv(Total_Consumed .. Last);
+			Read(Stdin.all, Buf_Input(Stream_Element_Offset(
+				Last - Total_Consumed + 1) ..
+				Stream_Element_Offset(Buf_Input'Last)),
+				Stream_Element_Offset(Last));
 			exit when Last < 0;
 			if Last < 6 then
 				raise Constraint_Error with
@@ -73,13 +79,16 @@ begin
 		end if;
 		EOF_Status := LZ4Ada.No;
 		declare
-			Required_Buffer_Size: Stream_Element_Offset;
-			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
-					Buf_Input(Total_Consumed .. Last),
-					Consumed, Required_Buffer_Size);
-			Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
+			Required_Buffer_Size: Integer;
+			Consumed_Conv: Integer;
+			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init_With_Header(
+					Buf_Input_Conv(Total_Consumed .. Last),
+					Consumed_Conv, Required_Buffer_Size,
+					LZ4Ada.Use_First);
+			Buf: Stream_Element_Array(1 .. Stream_Element_Offset(
+							Required_Buffer_Size));
 		begin
-			Total_Consumed := Total_Consumed + Consumed;
+			Total_Consumed := Total_Consumed + Consumed_Conv;
 			-- Check for = No here because we need to assume that
 			-- each potential end of frame is treated like an
 			-- actual end of frame given that after the current

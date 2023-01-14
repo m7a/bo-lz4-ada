@@ -112,11 +112,6 @@ package body LZ4Ada is
 			Process_Header_Bytes(MT, Header_Buffer,
 						Input(Input_Pos .. Input'Last),
 						Consumed_Inner);
-			if Consumed_Inner = 0 then
-				raise No_Progress with
-					"Provided header data was not " &
-					"processed.";
-			end if;
 			Input_Pos    := Input_Pos    + Consumed_Inner;
 			Num_Consumed := Num_Consumed + Consumed_Inner;
 		end loop;
