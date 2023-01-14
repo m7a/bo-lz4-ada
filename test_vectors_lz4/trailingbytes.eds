@@ -1,1 +1,1 @@
-raised LZ4ADA.NO_PROGRESS : End mark already processed.
+raised LZ4ADA.DATA_CORRUPTION : Requested Single_Frame operation but data was provided after End of Frame was detected

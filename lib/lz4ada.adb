@@ -86,8 +86,16 @@ package body LZ4Ada is
 			return Decompressor is
 		Header_Buffer:  Octets(0 .. 19); -- 20 byte buffer = large enough
 		Input_Pos:      Integer := Input'First;
+		-- If we were to use Reservation directly here, it would not
+		-- tell us a max block size since MT.Memory_Reservation would
+		-- still be a `Single_Frame`. Work around this by initially
+		-- pretending that we want to `Use_First` when the API user
+		-- supplied `Single_Frame`. Then, replace the detected setting
+		-- by `Single_Frame` setting later.
 		MT:             Decompressor_Meta := (Memory_Reservation =>
-						Reservation, others => <>);
+					(if Reservation = Single_Frame
+					then Use_First else Reservation),
+					others => <>);
 		Consumed_Inner: Integer;
 		Block_Max_Size: Integer;
 		In_Last_Comp:   Integer;

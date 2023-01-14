@@ -24,23 +24,20 @@ procedure LZ4Test is
 	-- Good Cases
 	--
 
-	procedure Test_Inner(
-		Ctx:                  in out LZ4Ada.Decompressor;
-		Required_Buffer_Size: in     Stream_Element_Offset;
-		Buf_Input:            in out Stream_Element_Array;
-		Total_Consumed, Last: in out Stream_Element_Offset;
-		LZS, BNS:             in out Ada.Streams.Stream_IO.File_Type
-	) is
-		O_Buf, C_Buf: Stream_Element_Array(1 .. Required_Buffer_Size);
+	procedure Test_Good_Case_Inner(LZS, BNS:
+				in out Ada.Streams.Stream_IO.File_Type) is
+		Buf_Input:    Stream_Element_Array(0 .. 4095);
+		OSZ:          Stream_Element_Offset;
+		Ctx:          LZ4Ada.Decompressor := LZ4Ada.Init(OSZ);
+		O_Buf, C_Buf: Stream_Element_Array(1 .. OSZ);
+
+		Last:                 Stream_Element_Offset := -1;
+		Total_Consumed:       Stream_Element_Offset := 0;
 		Consumed, C_Got, Len, Result_First, Result_Last:
 							Stream_Element_Offset;
 		EOF_Status: End_Of_Frame := Ctx.Is_End_Of_Frame;
 	begin
-		-- We must do the loop at least once in maybe cases
-		if EOF_Status = Maybe then
-			EOF_Status := No;
-		end if;
-		while EOF_Status = No loop
+		loop
 			if Total_Consumed > Last then
 				Read(LZS, Buf_Input, Last);
 				exit when Last < 0;
@@ -66,38 +63,18 @@ procedure LZ4Test is
 				end if;
 			end if;
 			Total_Consumed := Total_Consumed + Consumed;
-			EOF_Status := Ctx.Is_End_Of_Frame;
+			EOF_Status     := Ctx.Is_End_Of_Frame;
 		end loop;
-	end Test_Inner;
-
-	procedure Test_Good_Case_Inner(LZS, BNS:
-				in out Ada.Streams.Stream_IO.File_Type) is
-		Buf_Input: Stream_Element_Array(0 .. 4095);
-		Last: Stream_Element_Offset := -1;
-		Total_Consumed: Stream_Element_Offset := 0;
-		Required_Buffer_Size: Stream_Element_Offset;
-	begin
-		loop
-			Read(LZS, Buf_Input(Last - Total_Consumed + 1 ..
-							Buf_Input'Last), Last);
-			exit when Last < 0;
-			if Last < 6 then
-				raise Test_Failure with
-						"Partial frame detected. " &
-						"Unable to process all data";
-			end if;
-			declare
-				Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(
-					Buf_Input(0 .. Last), Total_Consumed,
-					Required_Buffer_Size);
-			begin
-				Test_Inner(Ctx, Required_Buffer_Size, Buf_Input,
-						Total_Consumed, Last, LZS, BNS);
-			end;
-			exit when Last < 0;
-			Buf_Input(0 .. Last - Total_Consumed) :=
-					Buf_Input(Total_Consumed .. Last);
-		end loop;
+		if EOF_Status = No then
+			raise Test_Failure with "Mismatching EOF status";
+		end if;
+		Read(BNS, C_Buf, C_Got);
+		if C_Got > 0 then
+			raise Test_Failure with
+				"More comparison data (delta >= " &
+				Stream_Element_Offset'Image(C_Got) &
+				") than produced by decompressor.";
+		end if;
 	end Test_Good_Case_Inner;
 
 	procedure Open_Stream_Reading(S: in out Ada.Streams.Stream_IO.File_Type;
@@ -161,42 +138,35 @@ procedure LZ4Test is
 		end if;
 	end Test_Good_Hash_Individual_Bytes;
 
-	-- TODO NEED THIS FOR MORE TEST CASES / BASED ON FILES MIGHT MAKE
-	--      MORE SENSE ANYWAYS ALSO MULTIFRAME CAPABILITY
 	procedure Test_Good_Decompress_Individual_Bytes is
 		ENOOUT: constant String :=
 			"[FAIL] Test_Good_Decompress_Individual_Bytes - " &
 			"no output produced but expected";
-		TC: constant Octets(0 .. 19) := (
-			16#04#, 16#22#, 16#4d#, 16#18#, 16#64#, 16#40#, 16#a7#,
-			16#01#, 16#00#, 16#00#, 16#80#, 16#00#, 16#00#, 16#00#,
-			16#00#, 16#00#, 16#3e#, 16#b0#, 16#65#, 16#cf#
-		--#TC: constant Octets(0 .. 77) := (
-		--	16#02#, 16#21#, 16#4c#, 16#18#, 16#30#, 16#00#, 16#00#,
-		--	16#00#, 16#f0#, 16#1f#, 16#3c#, 16#3f#, 16#78#, 16#6d#,
-		--	16#6c#, 16#20#, 16#76#, 16#65#, 16#72#, 16#73#, 16#69#,
-		--	16#6f#, 16#6e#, 16#3d#, 16#22#, 16#31#, 16#2e#, 16#30#,
-		--	16#22#, 16#20#, 16#65#, 16#6e#, 16#63#, 16#6f#, 16#64#,
-		--	16#69#, 16#6e#, 16#67#, 16#3d#, 16#22#, 16#55#, 16#54#,
-		--	16#46#, 16#2d#, 16#38#, 16#22#, 16#3f#, 16#3e#, 16#3c#,
-		--	16#74#, 16#65#, 16#73#, 16#74#, 16#2f#, 16#3e#, 16#0a#,
-		--	16#02#, 16#21#, 16#4c#, 16#18#, 16#0e#, 16#00#, 16#00#,
-		--	16#00#, 16#d0#, 16#48#, 16#65#, 16#6c#, 16#6c#, 16#6f#,
-		--	16#20#, 16#77#, 16#6f#, 16#72#, 16#6c#, 16#64#, 16#2e#,
-		--	16#0a#
+		TC: constant Octets(0 .. 77) := (
+		     16#02#, 16#21#, 16#4c#, 16#18#, 16#30#, 16#00#, 16#00#,
+		     16#00#, 16#f0#, 16#1f#, 16#3c#, 16#3f#, 16#78#, 16#6d#,
+		     16#6c#, 16#20#, 16#76#, 16#65#, 16#72#, 16#73#, 16#69#,
+		     16#6f#, 16#6e#, 16#3d#, 16#22#, 16#31#, 16#2e#, 16#30#,
+		     16#22#, 16#20#, 16#65#, 16#6e#, 16#63#, 16#6f#, 16#64#,
+		     16#69#, 16#6e#, 16#67#, 16#3d#, 16#22#, 16#55#, 16#54#,
+		     16#46#, 16#2d#, 16#38#, 16#22#, 16#3f#, 16#3e#, 16#3c#,
+		     16#74#, 16#65#, 16#73#, 16#74#, 16#2f#, 16#3e#, 16#0a#,
+		     16#02#, 16#21#, 16#4c#, 16#18#, 16#0e#, 16#00#, 16#00#,
+		     16#00#, 16#d0#, 16#48#, 16#65#, 16#6c#, 16#6c#, 16#6f#,
+		     16#20#, 16#77#, 16#6f#, 16#72#, 16#6c#, 16#64#, 16#2e#,
+		     16#0a#
 		);
-		--Expect_Str: constant String :=
-		--	"<?xml version=""1.0"" encoding=""UTF-8""?><test/>" &
-		--	Character'Val(16#a0#) & "Hello world." &
-		--	Character'Val(16#a0#);
-		--RS_Expect: Octets(0 .. Expect_Str'Length - 1);
-		--for RS_Expect'Address use Expect_Str'Address;
-		RS_Expect: constant Octets := (0 => 16#00#);
+		Expect_Str: constant String :=
+			"<?xml version=""1.0"" encoding=""UTF-8""?><test/>" &
+			Character'Val(16#0a#) & "Hello world." &
+			Character'Val(16#0a#);
+		RS_Expect: Octets(0 .. Expect_Str'Length - 1);
+		for RS_Expect'Address use Expect_Str'Address;
 
 		RS_Have: Octets(RS_Expect'Range);
 		Initially_Consumed, Min_Buffer_Size: Integer;
-		Ctx: Decompressor := Init(TC, Initially_Consumed,
-							Min_Buffer_Size);
+		Ctx: Decompressor := Init_With_Header(TC, Initially_Consumed,
+						Min_Buffer_Size, For_All);
 		O_Buf: Octets(0 .. Min_Buffer_Size - 1);
 		Num_Consumed, Output_First, Output_Last: Integer;
 		RS_Idx: Integer := RS_Have'First;
@@ -211,7 +181,7 @@ procedure LZ4Test is
 					Put_Line(ENOOUT);
 					return;
 				end if;
-				if Output_First >= Output_Last then
+				if Output_Last >= Output_First then
 					RS_Have(RS_Idx .. RS_Idx + Output_Last -
 						Output_First) := O_Buf(
 						Output_First .. Output_Last);
@@ -254,15 +224,19 @@ procedure LZ4Test is
 	--
 
 	procedure Error_Test_Case_Process(Buf_Input: in Stream_Element_Array) is
-		Required_Buffer_Size, Total_Consumed: Stream_Element_Offset;
-		Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(Buf_Input,
-					Total_Consumed, Required_Buffer_Size);
-		BO: Stream_Element_Array(0 ..  Required_Buffer_Size);
+		In_Conv: Octets(0 .. Buf_Input'Length - 1);
+		for In_Conv'Address use Buf_Input'Address;
+		Total_Consumed, Required_Buffer_Size: Integer;
+		Ctx: LZ4Ada.Decompressor := LZ4Ada.Init_With_Header(In_Conv,
+			Total_Consumed, Required_Buffer_Size, Single_Frame);
+		BO: Stream_Element_Array(0 .. Stream_Element_Offset(
+						Required_Buffer_Size - 1));
 		Consumed, RF, RL: Stream_Element_Offset;
 	begin
 		while Total_Consumed < Buf_Input'Length loop
-			Ctx.Update(Buf_Input(Total_Consumed .. Buf_Input'Last),
-							Consumed, BO, RF, RL);
+			Ctx.Update(Buf_Input(Stream_Element_Offset(
+					Total_Consumed) .. Buf_Input'Last),
+					Consumed, BO, RF, RL);
 			if Consumed = 0 then
 				raise Test_Failure with
 					"No more data accepted but no " &
@@ -270,7 +244,7 @@ procedure LZ4Test is
 					"end should not be reached for " &
 					"error test case.";
 			end if;
-			Total_Consumed := Total_Consumed + Consumed;
+			Total_Consumed := Total_Consumed + Integer(Consumed);
 		end loop;
 		raise Test_Failure with
 			"All data processed but no exception raised. " &
