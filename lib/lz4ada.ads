@@ -119,6 +119,7 @@ package LZ4Ada is
 		type Hasher is tagged limited private;
 		-- Initialize the hash function.
 		function  Init(Seed: in U32 := 0) return Hasher;
+		procedure Reset(Ctx: in out Hasher; Seed: in U32 := 0);
 		-- Add data to process
 		procedure Update(Ctx: in out Hasher; Input: in Octets);
 		-- Compute Hash
@@ -156,6 +157,8 @@ private
 	History_Size:     constant Integer := 64 * 1024;
 	Block_Size_Bytes: constant Integer := 4;
 
+	subtype Magic_Skippable is U32 range 16#184d2a50# .. 16#184d2a5f#;
+
 	type Format is (TBD, Legacy, Modern, Skippable);
 	type Header_Parsing_State is (Need_Magic, Need_Modern, Need_Flags,
 					Need_Skippable_Length, Header_Complete);
@@ -181,6 +184,9 @@ private
 				with Pre => M.Header_Parsing /= Header_Complete;
 	procedure Process_Header_Magic(M: in out Decompressor_Meta;
 						Input_Buffer: in Octets);
+	procedure Process_Header_Magic(M: in out Decompressor_Meta;
+							Magic_NB: in U32);
+	procedure Process_Legacy_End_Of_Header(M: in out Decompressor_Meta);
 	procedure Process_Header_Flags(M: in out Decompressor_Meta;
 						Input_Buffer: in Octets);
 	procedure Check_Flag_Validity(FLG_Version: in U8; Reserved: in Boolean);
@@ -196,6 +202,9 @@ private
 
 	procedure Skip(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: out Integer);
+	procedure Reset_For_Next_Frame(Ctx: in out Decompressor;
+				Input: in Octets; Num_Consumed: out Integer);
+	procedure Reset_Outer_For_Next_Frame(Ctx: in out Decompressor);
 	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: in out Integer);
 	-- Num_Consumed = 0 precondition could be lifted by improving the code
@@ -203,6 +212,7 @@ private
 			Input: in Octets; Num_Consumed: in out Integer)
 			with Pre => (Ctx.M.Input_Buffer_Filled <
 					Block_Size_Bytes and Num_Consumed = 0);
+	function Is_Any_Magic_Number(Candidate: in U32) return Boolean;
 	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
 				Input: in Octets; Num_Consumed: in out Integer;
 				Buffer: in out Octets;

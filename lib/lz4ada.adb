@@ -5,8 +5,6 @@
 
 with Ada.Assertions;
 
--- TODO DRAFT EXISTS. MAKE IT COMPILE. THEN TEST WITH EXISTENT PROGRAMS. THEN REALLY CHECK INTO HOW TO "RE-INIT" IN PLACE WHENEVER RESERVATION IS NOT "Single_Frame". ALSO FIND OUT WHETHER WE CAN ORGANIZE EXCEPTIONS ANY BETTER
-
 package body LZ4Ada is
 
 	------------------------------------------------------------------------
@@ -158,22 +156,24 @@ package body LZ4Ada is
 								(4 .. 7)));
 				M.Status_EOF     := (if M.Size_Remaining = 0
 							then Yes else No);
+				M.Input_Buffer_Filled := 0;
 			when Header_Complete =>
 				raise Constraint_Error with
 					"Header_Complete case must not be " &
 					"reached while processing header " &
 					"bytes. Library bug detected.";
 			end case;
-			if M.Header_Parsing = Header_Complete then
-				M.Input_Buffer_Filled := 0;
-			end if;
 		end if;
 	end Process_Header_Bytes;
 
 	procedure Process_Header_Magic(M: in out Decompressor_Meta;
 						Input_Buffer: in Octets) is
-		Magic_NB: constant U32 := Load_32(Input_Buffer(0 .. 3));
-		Effective_Reservation: Memory_Reservation := For_Legacy;
+	begin
+		Process_Header_Magic(M, Load_32(Input_Buffer(0 .. 3)));
+	end Process_Header_Magic;
+
+	procedure Process_Header_Magic(M: in out Decompressor_Meta;
+							Magic_NB: in U32) is
 	begin
 		case Magic_NB is
 		when Magic_Modern =>
@@ -181,19 +181,8 @@ package body LZ4Ada is
 			M.Header_Parsing          := Need_Flags;
 			M.Size_Remaining          := 2;
 		when Magic_Legacy =>
-			M.Is_Format               := Legacy;
-			M.Header_Parsing          := Header_Complete;
-			M.Size_Remaining          := 0;
-			M.Status_EOF              := Maybe;
-			M.Block_Checksum_Length   := 0;
-			M.Content_Checksum_Length := 0;
-			M.Has_Content_Size        := False;
-			M.Size_Remaining          := 0;
-			M.Is_Compressed           := True;
-			Check_Reservation(M.Memory_Reservation,
-							Effective_Reservation);
-			M.Memory_Reservation := Effective_Reservation;
-		when 16#184d2a50# .. 16#184d2a5f# =>
+			Process_Legacy_End_Of_Header(M);
+		when Magic_Skippable =>
 			M.Is_Format               := Skippable;
 			M.Header_Parsing          := Need_Skippable_Length;
 			M.Size_Remaining          := 4;
@@ -208,6 +197,23 @@ package body LZ4Ada is
 						"magic: 0x" & To_Hex(Magic_NB);
 		end case;
 	end Process_Header_Magic;
+
+	procedure Process_Legacy_End_Of_Header(M: in out Decompressor_Meta) is
+		Effective_Reservation: Memory_Reservation := For_Legacy;
+	begin
+		M.Input_Buffer_Filled     := 0;
+		M.Is_Format               := Legacy;
+		M.Header_Parsing          := Header_Complete;
+		M.Size_Remaining          := 0;
+		M.Status_EOF              := Maybe;
+		M.Block_Checksum_Length   := 0;
+		M.Content_Checksum_Length := 0;
+		M.Has_Content_Size        := False;
+		M.Size_Remaining          := 0;
+		M.Is_Compressed           := True;
+		Check_Reservation(M.Memory_Reservation, Effective_Reservation);
+		M.Memory_Reservation := Effective_Reservation;
+	end Process_Legacy_End_Of_Header;
 
 	procedure Check_Reservation(Requested: in Flexible_Memory_Reservation;
 					Effective: in out Memory_Reservation) is
@@ -251,15 +257,15 @@ package body LZ4Ada is
 
 		-- Even if data size is 0, this frame can still contain data.
 		-- Process such data by setting Status_EOF := No unconditionally
-		M.Status_EOF         := No;
-		Required_Reservation := Get_Block_Size_Reservation(
+		M.Status_EOF              := No;
+		Required_Reservation      := Get_Block_Size_Reservation(
 							BD_Block_Max_SZ);
 		M.Block_Checksum_Length   := FLG_Block_Chck   * 4;
 		M.Content_Checksum_Length := FLG_Content_Chck * 4;
-		M.Has_Content_Size   := ((FLG and 8) /= 0);
-		M.Header_Parsing     := Need_Modern;
+		M.Has_Content_Size        := ((FLG and 8) /= 0);
+		M.Header_Parsing          := Need_Modern;
 		-- for now still tracks the header bytes to come
-		M.Size_Remaining     := U64(1 + M.Has_Content_Size * 8 +
+		M.Size_Remaining          := U64(1 + M.Has_Content_Size * 8 +
 							FLG_Dictionary * 4);
 
 		Check_Reservation(M.Memory_Reservation, Required_Reservation);
@@ -309,7 +315,8 @@ package body LZ4Ada is
 		-- offset 4 since FrameDescriptor excludes magic per spec.
 		Check_Header_Checksum(Input_Buffer(4 ..
 				M.Input_Buffer_Filled - 2), Checksum_Byte);
-		M.Header_Parsing := Header_Complete;
+		M.Header_Parsing      := Header_Complete;
+		M.Input_Buffer_Filled := 0;
 	end Process_Modern_End_Of_Header;
 
 	function Load_64(Data: in Octets) return U64 is
@@ -393,20 +400,49 @@ package body LZ4Ada is
 		Consumed: constant U64 := U64'Min(U64(Input'Length), Remain);
 	begin
 		if Ctx.M.Status_EOF = Yes and Consumed = 0 then
-			raise No_Progress with
-					"Skippable frame has ended already.";
+			Ctx.Reset_For_Next_Frame(Input, Num_Consumed);
+		else
+			Num_Consumed         := Integer(Consumed);
+			Ctx.M.Size_Remaining := Remain - Consumed;
+			Ctx.M.Status_EOF     := (if Ctx.M.Size_Remaining = 0
+							then Yes else No);
 		end if;
-		Num_Consumed := Integer(Consumed);
-		Ctx.M.Size_Remaining := Remain - Consumed;
-		Ctx.M.Status_EOF := (if Ctx.M.Size_Remaining = 0 then Yes else No);
 	end Skip;
+
+	procedure Reset_For_Next_Frame(Ctx: in out Decompressor;
+				Input: in Octets; Num_Consumed: out Integer) is
+	begin
+		if Ctx.M.Memory_Reservation = Single_Frame then
+			raise Data_Corruption with -- TODO OR NO_PROGRESS
+				"Requested Single_Frame operation but data " &
+				"was provided after End of Frame was detected";
+		end if;
+		Ctx.M.Status_EOF     := No;
+		Ctx.M.Header_Parsing := Need_Magic;
+		Ctx.M.Size_Remaining := 4;
+		Ctx.Reset_Outer_For_Next_Frame;
+		Process_Header_Bytes(Ctx.M, Ctx.Input_Buffer, Input,
+								Num_Consumed);
+	end Reset_For_Next_Frame;
+
+	procedure Reset_Outer_For_Next_Frame(Ctx: in out Decompressor) is
+	begin
+		Ctx.Input_Length       := -1;
+		-- Unclear if this is needed but it would seem to improve
+		-- reliability by avoiding any means to backreference data from
+		-- the preceding frame!
+		Ctx.Output_Pos         := 0;
+		Ctx.Output_Pos_History := 0;
+		Ctx.Hash_All_Data.Reset;
+	end Reset_Outer_For_Next_Frame;
 
 	procedure Check_End_Mark(Ctx: in out Decompressor; Input: in Octets;
 						Num_Consumed: in out Integer) is
 		procedure Set_Frame_Has_Ended is
 		begin
 			Ctx.M.Status_EOF := Yes;
-			if Ctx.M.Has_Content_Size and Ctx.M.Size_Remaining /= 0 then
+			if Ctx.M.Has_Content_Size and
+						Ctx.M.Size_Remaining /= 0 then
 				raise Data_Corruption with
 					"Frame has ended, but according to " &
 					"content size, there should be " &
@@ -421,12 +457,13 @@ package body LZ4Ada is
 	begin
 		if Ctx.M.Content_Checksum_Length = 0 or Required_Len <= 0 then
 			if Ctx.M.Status_EOF = Yes and Num_Consumed = 0 then
-				raise No_Progress with
-						"End mark already processed.";
+				Ctx.Reset_For_Next_Frame(Input, Num_Consumed);
+			else
+				Set_Frame_Has_Ended;
 			end if;
-			Set_Frame_Has_Ended;
 		elsif Provided_Len >= Required_Len then
 			declare
+				-- TODO SMALL PROBLEM: WHY DOES IT READ THIS CHECKSUM FROM 4 bytes beyond where it should actually get it from. Still, hte computed checksum is correct (i.e. calculated over the right data subset). But we are reading from offset + 4 instead of offset + 0???
 				Checksum: constant U32 := Load_32(
 					Ctx.Input_Buffer(0 ..
 						Ctx.M.Input_Buffer_Filled - 1) &
@@ -459,55 +496,14 @@ package body LZ4Ada is
 		end if;
 	end Check_End_Mark;
 
-	-- TODO TEST ONLY
-	-- function Is_Any_Magic_Number(Candidate: in U32) return Boolean is
-	-- begin
-	-- 	case Candidate is
-	-- 	when Magic_Modern|Magic_Legacy    => return True;
-	-- 	when 16#184d2a50# .. 16#184d2a5f# => return True;
-	-- 	when others                       => return False;
-	-- 	end case;
-	-- end Is_Any_Magic_Number;
-
 	procedure Try_Detect_Input_Length(Ctx: in out Decompressor;
 			Input: in Octets; Num_Consumed: in out Integer) is
 		Additional_Length: constant Integer :=
 				Block_Size_Bytes + Ctx.M.Block_Checksum_Length;
 		Length_Word: U32;
-	begin
-		Num_Consumed := Integer'Min(Block_Size_Bytes -
-					Ctx.M.Input_Buffer_Filled, Input'Length);
-		Ctx.Input_Buffer(Ctx.M.Input_Buffer_Filled ..
-			Ctx.M.Input_Buffer_Filled + Num_Consumed - 1) :=
-			Input(Input'First .. Input'First + Num_Consumed - 1);
-		Ctx.M.Input_Buffer_Filled :=
-			Ctx.M.Input_Buffer_Filled + Num_Consumed;
 
-		if Ctx.M.Input_Buffer_Filled = Block_Size_Bytes then
-			Length_Word := Load_32(Ctx.Input_Buffer(0 ..
-							Block_Size_Bytes - 1));
-			if Ctx.M.Is_Format = Modern and Length_Word = 0 then
-				Ctx.Is_At_End_Mark      := True;
-				Ctx.M.Input_Buffer_Filled := 0;
-				return;
-			-- TODO IS IT CORRECT TO CHECK FOR LEGACY MAGIC HERE OR WOULD WE RATHER CHECK FOR ANY OF THE ALLOWED MAGIC SEQUENCES? IT DOES NOT MATTER FOR THE TEST DATA SO FAR BECAUSE NEITHER LOGIC TRIGGERS THE CONDITION TO BECOME TRUE. NEED MORE TEST DATA FOR THIS ONE. CAN TEST THIS WITH "ONE BYTE AT A TIME MODE"
-			elsif Ctx.M.Is_Format = Legacy and
-						Length_Word = Magic_Legacy then
-				Ctx.Is_At_End_Mark := True;
-				-- Unconsume this part from the next frame!
-				-- This can make the number of bytes consumed
-				-- negative because we actually want to tell the
-				-- library users when we "unconsume" beyond the
-				-- currently provided input. This is expected to
-				-- occur only in case of very small input
-				-- buffers being provided (i.e. buffers smaller
-				-- than four bytes).
-				-- As a result, we cannot assert the following
-				-- here although it would be more intuitive:
-				-- Num_Consumed >= Block_Size_Bytes
-				Num_Consumed := Num_Consumed - Block_Size_Bytes;
-				return;
-			end if;
+		procedure Detect_Modern is
+		begin
 			if Ctx.M.Is_Format = Modern then
 				-- Bit = 1 aka. set   means uncompressed.
 				-- Bit = 0 aka. unset means compressed.
@@ -529,8 +525,47 @@ package body LZ4Ada is
 					Integer'Image(Additional_Length) &
 					" bytes for metadata.";
 			end if;
+		end Detect_Modern;
+	begin
+		Num_Consumed := Integer'Min(Block_Size_Bytes -
+				Ctx.M.Input_Buffer_Filled, Input'Length);
+		Ctx.Input_Buffer(Ctx.M.Input_Buffer_Filled ..
+			Ctx.M.Input_Buffer_Filled + Num_Consumed - 1) :=
+			Input(Input'First .. Input'First + Num_Consumed - 1);
+		Ctx.M.Input_Buffer_Filled :=
+			Ctx.M.Input_Buffer_Filled + Num_Consumed;
+
+		if Ctx.M.Input_Buffer_Filled = Block_Size_Bytes then
+			Length_Word := Load_32(Ctx.Input_Buffer(0 ..
+							Block_Size_Bytes - 1));
+			if Ctx.M.Is_Format = Modern and Length_Word = 0 then
+				Ctx.Is_At_End_Mark        := True;
+				Ctx.M.Input_Buffer_Filled := 0;
+			elsif Ctx.M.Is_Format = Legacy and
+					Is_Any_Magic_Number(Length_Word) then
+				if Ctx.M.Memory_Reservation = Single_Frame then
+					raise Data_Corruption with
+						"Requested Single_Frame " &
+						"operation but data provided " &
+						"what looks like the " &
+						"beginning of a follow-up " &
+						"legacy frame.";
+				end if;
+				Ctx.Reset_Outer_For_Next_Frame;
+				Process_Header_Magic(Ctx.M, Length_Word);
+			else
+				Detect_Modern;
+			end if;
 		end if;
 	end Try_Detect_Input_Length;
+
+	function Is_Any_Magic_Number(Candidate: in U32) return Boolean is
+	begin
+		case Candidate is
+		when Magic_Modern|Magic_Legacy|Magic_Skippable => return True;
+		when others                                    => return False;
+		end case;
+	end Is_Any_Magic_Number;
 
 	procedure Handle_Newly_Known_Input_Length(Ctx: in out Decompressor;
 				Input: in Octets; Num_Consumed: in out Integer;
@@ -858,14 +893,20 @@ package body LZ4Ada is
 
 		function Init(Seed: in U32 := 0) return Hasher is
 		begin
-			return (State_0      => Seed + Prime_1 + Prime_2,
-				State_1      => Seed + Prime_2,
-				State_2      => Seed,
-				State_3      => Seed - Prime_1,
-				Buffer       => (others => 0), -- syntax only
-				Buffer_Size  => 0,
-				Total_Length => 0);
+			return Ctx: Hasher do
+				Ctx.Reset;
+			end return;
 		end Init;
+
+		procedure Reset(Ctx: in out Hasher; Seed: in U32 := 0) is
+		begin
+			Ctx.State_0      := Seed + Prime_1 + Prime_2;
+			Ctx.State_1      := Seed + Prime_2;
+			Ctx.State_2      := Seed;
+			Ctx.State_3      := Seed - Prime_1;
+			Ctx.Buffer_Size  := 0;
+			Ctx.Total_Length := 0;
+		end Reset;
 
 		procedure Update(Ctx: in out Hasher; Input: in Octets) is
 			Fast:  Boolean := (Ctx.Buffer_Size = 0);
