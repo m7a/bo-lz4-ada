@@ -115,8 +115,8 @@ package body LZ4Ada is
 			Input_Pos    := Input_Pos    + Consumed_Inner;
 			Num_Consumed := Num_Consumed + Consumed_Inner;
 		end loop;
-		Block_Max_Size  := Get_Block_Size(MT.Memory_Reservation);
-		In_Last_Comp    := Block_Max_Size + MT.Block_Checksum_Length +
+		Block_Max_Size := Get_Block_Size(MT.Memory_Reservation);
+		In_Last_Comp   := Block_Max_Size + MT.Block_Checksum_Length +
 							Block_Size_Bytes - 1;
 		Min_Buffer_Size := Block_Max_Size + History_Size + 8;
 		if Reservation = Single_Frame then
@@ -154,10 +154,11 @@ package body LZ4Ada is
 			when Need_Modern =>
 				Process_Modern_End_Of_Header(M, Input_Buffer);
 			when Need_Skippable_Length =>
+				M.Memory_Reservation := SZ_64_KiB;
 				M.Header_Parsing := Header_Complete;
 				M.Size_Remaining := U64(Load_32(Input_Buffer
 								(4 .. 7)));
-				M.Status_EOF     := (if M.Size_Remaining = 0
+				M.Status_EOF := (if M.Size_Remaining = 0
 							then Yes else No);
 				M.Input_Buffer_Filled := 0;
 			when Header_Complete =>
@@ -430,6 +431,7 @@ package body LZ4Ada is
 
 	procedure Reset_Outer_For_Next_Frame(Ctx: in out Decompressor) is
 	begin
+		Ctx.Is_At_End_Mark     := False;
 		Ctx.Input_Length       := -1;
 		-- Unclear if this is needed but it would seem to improve
 		-- reliability by avoiding any means to backreference data from
@@ -458,15 +460,16 @@ package body LZ4Ada is
 		Required_Len: constant Integer := Ctx.M.Content_Checksum_Length
 						- Ctx.M.Input_Buffer_Filled;
 	begin
-		if Ctx.M.Content_Checksum_Length = 0 or Required_Len <= 0 then
-			if Ctx.M.Status_EOF = Yes and Num_Consumed = 0 then
+		if Ctx.M.Content_Checksum_Length = 0 or Ctx.M.Status_EOF = Yes
+						or Required_Len <= 0 then
+			if Ctx.M.Status_EOF = Yes then
+				Ada.Assertions.Assert(Num_Consumed = 0);
 				Ctx.Reset_For_Next_Frame(Input, Num_Consumed);
 			else
 				Set_Frame_Has_Ended;
 			end if;
 		elsif Provided_Len >= Required_Len then
 			declare
-				-- TODO SMALL PROBLEM: WHY DOES IT READ THIS CHECKSUM FROM 4 bytes beyond where it should actually get it from. Still, hte computed checksum is correct (i.e. calculated over the right data subset). But we are reading from offset + 4 instead of offset + 0???
 				Checksum: constant U32 := Load_32(
 					Ctx.Input_Buffer(0 ..
 						Ctx.M.Input_Buffer_Filled - 1) &
@@ -551,8 +554,7 @@ package body LZ4Ada is
 						"Requested Single_Frame " &
 						"operation but data provided " &
 						"what looks like the " &
-						"beginning of a follow-up " &
-						"legacy frame.";
+						"beginning of another frame.";
 				end if;
 				Ctx.Reset_Outer_For_Next_Frame;
 				Process_Header_Magic(Ctx.M, Length_Word);
@@ -587,11 +589,9 @@ package body LZ4Ada is
 				Use_Input: constant Octets  := Input(Offset ..
 						Offset + Total_Length - 1);
 			begin
-				Num_Consumed := Num_Consumed +
-						Ctx.Input_Length +
-						Ctx.M.Block_Checksum_Length;
+				Num_Consumed := Num_Consumed + Total_Length;
 				Ctx.M.Input_Buffer_Filled := 0;
-				Ctx.Input_Length        := -1;
+				Ctx.Input_Length          := -1;
 				Ctx.Decode_Full_Block_With_Trailer(Use_Input,
 					Buffer, Output_First, Output_Last);
 			end;

@@ -16,6 +16,7 @@ lib/liblz4ada.so /usr/lib/x86_64-linux-gnu
 lib/lz4ada.ali /usr/lib/x86_64-linux-gnu/ada/adalib/lz4
 lib/lz4ada.ads /usr/share/ada/adainclude/lz4
 tool_unlz4ada/unlz4ada /usr/bin
+tool_unlz4ada_simple/unlz4ada_simple /usr/bin
 tool_xxhash32ada/xxhash32ada /usr/bin
 tool_lz4hdrinfo/lz4hdrinfo /usr/bin
 </property>

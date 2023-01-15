@@ -84,7 +84,7 @@ begin
 			Ctx: LZ4Ada.Decompressor := LZ4Ada.Init_With_Header(
 					Buf_Input_Conv(Total_Consumed .. Last),
 					Consumed_Conv, Required_Buffer_Size,
-					LZ4Ada.Use_First);
+					LZ4Ada.Single_Frame);
 			Buf: Stream_Element_Array(1 .. Stream_Element_Offset(
 							Required_Buffer_Size));
 		begin

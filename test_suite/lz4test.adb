@@ -24,9 +24,14 @@ procedure LZ4Test is
 	-- Good Cases
 	--
 
+	generic
+		Input_Buf_SZ: in Stream_Element_Offset;
+	procedure Test_Good_Case_Inner(LZS, BNS:
+				in out Ada.Streams.Stream_IO.File_Type);
+
 	procedure Test_Good_Case_Inner(LZS, BNS:
 				in out Ada.Streams.Stream_IO.File_Type) is
-		Buf_Input:    Stream_Element_Array(0 .. 4095);
+		Buf_Input:    Stream_Element_Array(0 .. Input_Buf_SZ - 1);
 		OSZ:          Stream_Element_Offset;
 		Ctx:          LZ4Ada.Decompressor := LZ4Ada.Init(OSZ);
 		O_Buf, C_Buf: Stream_Element_Array(1 .. OSZ);
@@ -86,6 +91,7 @@ procedure LZ4Test is
 	generic
 		type BNT is limited private;
 		Ext: in String;
+		Descr: in String;
 		with procedure Run(LZS: in out Ada.Streams.Stream_IO.File_Type;
 							BNS: in out BNT);
 		with procedure Open_BNT(BNS: in out BNT; BN: in String);
@@ -103,18 +109,20 @@ procedure LZ4Test is
 			Open_BNT(BNS, BN);
 			begin
 				Run(LZS, BNS);
-				Put_Line("[ OK ] Test " & Simple_Name(En));
+				Put_Line("[ OK ] " & Descr &
+						" Test " & Simple_Name(En));
 			exception
 			when Ex: others =>
 				-- seems to include a NL already
-				Put("[FAIL] Test " & Simple_Name(En) &
-					" -- " & Exception_Information(Ex));
+				Put("[FAIL] " & Descr & " Test " &
+						Simple_Name(En) & " -- " &
+						Exception_Information(Ex));
 			end;
 			Close_BNT(BNS);
 			Close(LZS);
 		else
-			Put_Line("[WARN] One of " & LZ & " and " & BN &
-						" is missing. Not testing...");
+			Put_Line("[WARN] " & Descr & " One of " & LZ & " and " &
+					BN & " is missing. Not testing...");
 		end if;
 	end Generic_Test_Case;
 
@@ -206,15 +214,26 @@ procedure LZ4Test is
 	end Test_Good_Decompress_Individual_Bytes;
 
 	procedure Test_Good_Cases is
-		procedure Test_Good_Case is new Generic_Test_Case(
+		procedure Test_Good_Case_4K is new Test_Good_Case_Inner(4096);
+		procedure Test_Good_Case_1B is new Test_Good_Case_Inner(1);
+				
+		procedure Test_Good_Case_4K is new Generic_Test_Case(
 				BNT       => Ada.Streams.Stream_IO.File_Type,
-				Ext       => "bin", Run => Test_Good_Case_Inner,
+				Ext       => "bin", Run => Test_Good_Case_4K,
 				Open_BNT  => Open_Stream_Reading,
-				Close_BNT => Close);
+				Close_BNT => Close, Descr => "4K");
+		procedure Test_Good_Case_1B is new Generic_Test_Case(
+				BNT       => Ada.Streams.Stream_IO.File_Type,
+				Ext       => "bin", Run => Test_Good_Case_1B,
+				Open_BNT  => Open_Stream_Reading,
+				Close_BNT => Close, Descr => "1b");
 	begin
 		Search("../test_vectors_lz4", "*.lz4",
 				(Ordinary_File => True, others => False),
-				Test_Good_Case'Access);
+				Test_Good_Case_4K'Access);
+		Search("../test_vectors_lz4", "*.lz4",
+				(Ordinary_File => True, others => False),
+				Test_Good_Case_1B'Access);
 		Test_Good_Hash_Individual_Bytes;
 		Test_Good_Decompress_Individual_Bytes;
 	end Test_Good_Cases;
@@ -296,6 +315,85 @@ procedure LZ4Test is
 		end;
 	end Test_Error_Case_Inner;
 
+	procedure Test_Error_Case_Reservation_Exceeded is
+		-- First few bytes from z2841.lz4 which requires 1M buffer.
+		TC: constant Octets(0 .. 35) := (
+			16#04#, 16#22#, 16#4d#, 16#18#, 16#44#, 16#60#, 16#27#,
+			16#1a#, 16#10#, 16#00#, 16#00#, 16#1f#, 16#00#, 16#01#,
+			16#00#, 16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#,
+			16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#,
+			16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#, 16#ff#,
+			16#ff#
+		);
+	begin
+		declare
+			Min_Buffer_Size, Initially_Consumed: Integer;
+			Ctx: Decompressor := Init_With_Header(TC,
+				Initially_Consumed, Min_Buffer_Size, SZ_64_KiB);
+		begin
+			Put_Line("       Is_EoF = " & End_Of_Frame'Image(
+							Ctx.Is_End_Of_Frame));
+			Put_Line("[FAIL] Test_Error_Case_Reservation_Exceeded "
+				& "did not indicate errors, but exception was "
+				& "expected.");
+		end;
+	exception
+		when Data_Too_Large =>
+			Put_Line("[ OK ] Test_Error_Case_Reservation_Exceeded");
+		when Ex: others =>
+			Put_Line("[FAIL] Test_Error_Case_Reservation_Exceeded "
+				& "unexpected exception type -- " &
+				Exception_Information(Ex));
+	end Test_Error_Case_Reservation_Exceeded;
+
+	procedure Test_Error_Case_Unexpected_Multi_Frame is
+		-- cat test_vectors_lz4/minilegacy.lz4 \
+		-- 		test_vectors_lz4/minilegacy.lz4 | xxd -c 6 -i
+		TC: constant Octets(0 .. 111) := (
+			16#02#, 16#21#, 16#4c#, 16#18#, 16#30#, 16#00#,
+			16#00#, 16#00#, 16#f0#, 16#1f#, 16#3c#, 16#3f#,
+			16#78#, 16#6d#, 16#6c#, 16#20#, 16#76#, 16#65#,
+			16#72#, 16#73#, 16#69#, 16#6f#, 16#6e#, 16#3d#,
+			16#22#, 16#31#, 16#2e#, 16#30#, 16#22#, 16#20#,
+			16#65#, 16#6e#, 16#63#, 16#6f#, 16#64#, 16#69#,
+			16#6e#, 16#67#, 16#3d#, 16#22#, 16#55#, 16#54#,
+			16#46#, 16#2d#, 16#38#, 16#22#, 16#3f#, 16#3e#,
+			16#3c#, 16#74#, 16#65#, 16#73#, 16#74#, 16#2f#,
+			16#3e#, 16#0a#, 16#02#, 16#21#, 16#4c#, 16#18#,
+			16#30#, 16#00#, 16#00#, 16#00#, 16#f0#, 16#1f#,
+			16#3c#, 16#3f#, 16#78#, 16#6d#, 16#6c#, 16#20#,
+			16#76#, 16#65#, 16#72#, 16#73#, 16#69#, 16#6f#,
+			16#6e#, 16#3d#, 16#22#, 16#31#, 16#2e#, 16#30#,
+			16#22#, 16#20#, 16#65#, 16#6e#, 16#63#, 16#6f#,
+			16#64#, 16#69#, 16#6e#, 16#67#, 16#3d#, 16#22#,
+			16#55#, 16#54#, 16#46#, 16#2d#, 16#38#, 16#22#,
+			16#3f#, 16#3e#, 16#3c#, 16#74#, 16#65#, 16#73#,
+			16#74#, 16#2f#, 16#3e#, 16#0a#
+		);
+		Total_Consumed, Min_Buffer_Size: Integer;
+		Ctx: Decompressor := Init_With_Header(TC,
+				Total_Consumed, Min_Buffer_Size, Single_Frame);
+		Buf: Octets(0 .. Min_Buffer_Size - 1);
+		Consumed, RF, RL: Integer;
+	begin
+		while Total_Consumed < TC'Length loop
+			Ctx.Update(TC(Total_Consumed .. TC'Last),
+							Consumed, Buf, RF, RL);
+			Total_Consumed := Total_Consumed + Consumed;
+		end loop;
+		Put_Line("[FAIL] Test_Error_Case_Unexpected_Multi_Frame " &
+			" should have reported an error but did not.");
+	exception
+		when Data_Corruption =>
+			Put_Line("[ OK ] " &
+				"Test_Error_Case_Unexpected_Multi_Frame");
+		when Ex: others =>
+			Put_Line("[FAIL] " &
+				"Test_Error_Case_Unexpected_Multi_Frame " & 
+				"unexpected exception -- " &
+				Exception_Information(Ex));
+	end Test_Error_Case_Unexpected_Multi_Frame;
+
 	procedure Test_Error_Cases is
 		procedure Open_Text_Reading(FD: in out Ada.Text_IO.File_Type;
 							FN: in String) is
@@ -307,11 +405,13 @@ procedure LZ4Test is
 				BNT => Ada.Text_IO.File_Type,
 				Ext => "eds", Run => Test_Error_Case_Inner,
 				Open_BNT => Open_Text_Reading,
-				Close_BNT => Ada.Text_IO.Close);
+				Close_BNT => Ada.Text_IO.Close, Descr => "Er");
 	begin
 		Search("../test_vectors_lz4", "*.err",
 			(Ordinary_File => True, others => False),
 			Test_Error_Case'Access);
+		Test_Error_Case_Reservation_Exceeded;
+		Test_Error_Case_Unexpected_Multi_Frame;
 	end Test_Error_Cases;
 
 begin

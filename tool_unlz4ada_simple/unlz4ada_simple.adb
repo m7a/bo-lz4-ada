@@ -4,7 +4,7 @@ with Ada.Streams;
 use  Ada.Streams;
 with LZ4Ada;
 
-procedure UnLZ4Ada_Singleframe is
+procedure UnLZ4Ada_Simple is
 	Stdin:  constant access Root_Stream_Type'Class :=
 		Ada.Text_IO.Text_Streams.Stream(Ada.Text_IO.Standard_Input);
 	Stdout: constant access Root_Stream_Type'Class :=
@@ -34,4 +34,4 @@ begin
 	if LZ4Ada."="(Ctx.Is_End_Of_Frame, LZ4Ada.No) then
 		raise Constraint_Error with "Input ended mid-frame.";
 	end if;
-end UnLZ4Ada_Singleframe;
+end UnLZ4Ada_Simple;
