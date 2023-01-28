@@ -446,6 +446,7 @@ package body LZ4Ada is
 		procedure Set_Frame_Has_Ended is
 		begin
 			Ctx.M.Status_EOF := Yes;
+			Ctx.M.Input_Buffer_Filled := 0;
 			if Ctx.M.Has_Content_Size and
 						Ctx.M.Size_Remaining /= 0 then
 				raise Data_Corruption with
