@@ -305,7 +305,7 @@ procedure LZ4Test is
 			raise;
 		-- declared exceptions are expected
 		when Ex: Checksum_Error|Data_Corruption|Not_Supported|
-						No_Progress|Data_Too_Small =>
+				Too_Little_Memory|Too_Few_Header_Bytes =>
 			Detail_Check_Error(Ex, Declared);
 		-- there should not be any constraint errors or such
 		when Ex: others =>
@@ -338,7 +338,7 @@ procedure LZ4Test is
 				& "expected.");
 		end;
 	exception
-		when Data_Too_Large =>
+		when Too_Little_Memory =>
 			Put_Line("[ OK ] Test_Error_Case_Reservation_Exceeded");
 		when Ex: others =>
 			Put_Line("[FAIL] Test_Error_Case_Reservation_Exceeded "

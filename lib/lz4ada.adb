@@ -103,10 +103,10 @@ package body LZ4Ada is
 		Num_Consumed := 0;
 		while MT.Header_Parsing /= Header_Complete loop
 			if Input_Pos > Input'Last then
-				raise Data_Too_Small with
+				raise Too_Few_Header_Bytes with
 					"Expected at least " &
 					U64'Image(MT.Size_Remaining) &
-					"more bytes but header input has " &
+					" more bytes but header input has " &
 					"already ended.";
 			end if;
 			Process_Header_Bytes(MT, Header_Buffer,
@@ -224,7 +224,7 @@ package body LZ4Ada is
 	begin
 		if Requested in Memory_Reservation then
 			if Effective > Requested then
-				raise Data_Too_Large with
+				raise Too_Little_Memory with
 					"LZ4 header requres reservation " &
 					Memory_Reservation'Image(Effective) &
 					", but API call requested that only " &

@@ -1,1 +1,1 @@
-raised LZ4ADA.DATA_TOO_SMALL : Expected at least  5more bytes but header input has already ended.
+raised LZ4ADA.TOO_FEW_HEADER_BYTES : Expected at least  5 more bytes but header input has already ended.
