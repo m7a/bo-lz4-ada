@@ -134,7 +134,9 @@ package LZ4Ada is
 
 	-- This exception is raised whenever internal assumptions of the LZ4
 	-- frame or block format are violated. It indicates non-LZ4 or corrupted
-	-- input data.
+	-- input data. Additionally, this exception is raised when Single_Frame
+	-- operation was requsted, but data for a follow-up frame is detected
+	-- by the library.
 	Data_Corruption:      exception;
 
 	-- This exception is raised whenever values observed that the LZ4
@@ -165,7 +167,7 @@ package LZ4Ada is
 	-- header data.
 	--
 	-- This Decompressor accepts multiple concatenated frames in sequence
-	-- such as long as they fit the Mmeory_Reservation.
+	-- such as long as they fit the Memory_Reservation.
 	--
 	-- This is a convenient API for cases where either memory consumption
 	-- does not matter much (e.g. on Desktop OSes) or where the upper bound

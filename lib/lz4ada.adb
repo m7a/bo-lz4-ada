@@ -417,7 +417,7 @@ package body LZ4Ada is
 				Input: in Octets; Num_Consumed: out Integer) is
 	begin
 		if Ctx.M.Memory_Reservation = Single_Frame then
-			raise Data_Corruption with -- TODO OR NO_PROGRESS
+			raise Data_Corruption with
 				"Requested Single_Frame operation but data " &
 				"was provided after End of Frame was detected";
 		end if;

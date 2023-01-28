@@ -7,7 +7,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 tmpd="$(mktemp -d)"
 arc=0
 uut="$root/tool_unlz4ada/unlz4ada"
-#uut="$root/tool_unlz4ada_singleframe/unlz4ada_singleframe"
+#uut="$root/tool_unlz4ada_simple/unlz4ada_simple"
 
 printf "Using temporary directory %s\n" "$tmpd"
 for i in test_vectors_lz4/*.lz4; do

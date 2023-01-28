@@ -24,6 +24,7 @@ This implementation only supports decompression!
  * Skippable Frames are supported.
  * Provided checksums are verified.
  * Provided length information is verified.
+ * Concatenated frames can be decompressed.
  * Big Endian architectures are _UNSUPPORTED_.
  * Dictionaries are _UNSUPPORTED_.
 
@@ -34,7 +35,7 @@ program for instance, achieves over 3000 MiB/s. See section _Performance_.
 License
 =======
 
-This library is available under the Expat License.
+This library is available under the Expat aka. MIT License.
 See `LICENSE.txt` or `lz4ada.ads` for details.
 
 Compiling
@@ -54,6 +55,9 @@ The following dependencies are required for building:
 	ant
 	./test_run.sh
 
+Note: When running tests like the supplied test suite directly from the console
+(rather than using the script), `ulimit -s 60000` to increase the stack size!
+
 ## Install
 
 It is advisable to generate a package by means of `ant package`. Alternatively,
@@ -63,6 +67,9 @@ on your OS):
 	install -DsT lib/liblz4ada.so /usr/local/lib/x86_64-linux-gnu
 	install -m 644 -DT lib/lz4ada.ali /usr/local/lib/x86_64-linux-gnu/ada/adalib/lz4
 	install -m 644 -DT lib/lz4ada.ads /usr/local/share/ada/adainclude/lz4
+
+The following instructions assume that files are below `/usr/lib` rather than
+`/usr/local/lib`. If you use the commands above, adapt accordingly.
 
 Repository Structure
 ====================
@@ -91,20 +98,23 @@ the library.
    │    │
    │    ├── ....bin                   Original data
    │    │
-   │    └── ....lz4                   Compressed data
+   │    ├── ....lz4                   Compressee data
+   │    │
+   │    ├── ....err                   Invalid (manipulated) LZ4 data
+   │    │
+   │    └── ....eds                   Expected error messages for .err files
    │
    ├── tool_unlz4ada/
    │    │
-   │    └── unlz4ada.adb              Example program capable of decompressing
-   │                                  multiple, concatenated LZ4 Frames.
+   │    └── unlz4ada.adb              Example of explicitly handling frames.
    │
    ├── tool_lz4hdrinfo/
    │    │
    │    └── lz4hdrinfo.adb            Debugging tool to decode LZ4 frame header.
    │
-   ├── tool_unlz4ada_singleframe/
+   ├── tool_unlz4ada_simple/
    │    │
-   │    └── unlz4ada_singleframe.adb  Minimal example to decompress one frame.
+   │    └── unlz4ada_simple.adb       Simple usage example for the library API.
    │
    ├── tool_xxhash32ada/
    │    │
@@ -133,11 +143,10 @@ Unfortunately, given the interesting property of decompression that a small
 input can produce a larger output and given that the library is intended to
 achieve decent performance, setting up a minimal example is already nontrivial.
 
-The following code `unlz4ada_singleframe.adb` demonstrates a fully-working
-LZ4 decompression using the library. It is limited to decoding just a single
-LZ4 frame (which may well suffice for many applications). If you'd rather prefer
-a variant that decodes consecutive frames, have a look at the example
-`unlz4ada.adb` in directory `tool_unlz4ada`.
+The following code `unlz4ada_simple.adb` demonstrates a fully-working
+LZ4 decompression using the library. Like the reference implementation, it
+decompresses any number of concatenated frames. It has a larger memory footprint
+than the more complex implementation provided in directory `tool_unlz4ada`.
 
 ~~~{.ada}
 with Ada.Text_IO;
@@ -146,46 +155,41 @@ with Ada.Streams;
 use  Ada.Streams;
 with LZ4Ada;
 
-procedure UnLZ4Ada_Singleframe is
+procedure UnLZ4Ada_Simple is
 	-- 1.
 	Stdin:  constant access Root_Stream_Type'Class :=
 		Ada.Text_IO.Text_Streams.Stream(Ada.Text_IO.Standard_Input);
 	Stdout: constant access Root_Stream_Type'Class :=
 		Ada.Text_IO.Text_Streams.Stream(Ada.Text_IO.Standard_Output);
-	Buf_In: Stream_Element_Array(0 .. 4095); -- 4k buffer
-	Last:   Stream_Element_Offset;
-begin
+
 	-- 2.
-	Read(Stdin.all, Buf_In, Last);
-	if Last < 6 then
-		raise Constraint_Error with "LZ4 Frame Header too short.";
-	end if;
-	declare
-		Total_Consumed, Req_Buffer_Size: Stream_Element_Offset;
-		Ctx: LZ4Ada.Decompressor := LZ4Ada.Init(Buf_In(0 .. Last),
-					Total_Consumed, Req_Buffer_Size);
-		-- 3.
-		Buf: Stream_Element_Array(1 .. Req_Buffer_Size);
-		Consumed, Output_First, Output_Last: Stream_Element_Offset;
-	begin
-		-- 4.
-		loop
-			if Total_Consumed > Last then
-				Read(Stdin.all, Buf_In, Last);
-				exit when Last < 0;
-				Total_Consumed := 0;
-			end if;
-			Ctx.Update(Buf_In(Total_Consumed .. Last), Consumed,
-						Buf, Output_First, Output_Last);
-			Write(Stdout.all, Buf(Output_First .. Output_Last));
-			Total_Consumed := Total_Consumed + Consumed;
-		end loop;
-		-- 5.
-		if LZ4Ada."="(Ctx.Is_End_Of_Frame, LZ4Ada.No) then
-			raise Constraint_Error with "Input ended mid-frame.";
+	Buf_In: Stream_Element_Array(0 .. 4095); -- 4k buffer
+	Buf_Sz: Stream_Element_Offset;
+	Ctx:    LZ4Ada.Decompressor := LZ4Ada.Init(Buf_Sz);
+
+	Last:           Stream_Element_Offset := -1;
+	Total_Consumed: Stream_Element_Offset := 0;
+	Output_Buffer:  Stream_Element_Array(1 .. Buf_Sz);
+
+	Consumed, Output_First, Output_Last: Stream_Element_Offset;
+begin
+	-- 3.
+	loop
+		if Total_Consumed > Last then
+			Read(Stdin.all, Buf_In, Last);
+			exit when Last < 0;
+			Total_Consumed := 0;
 		end if;
-	end;
-end UnLZ4Ada_Singleframe;
+		Ctx.Update(Buf_In(Total_Consumed .. Last), Consumed,
+				Output_Buffer, Output_First, Output_Last);
+		Write(Stdout.all, Output_Buffer(Output_First .. Output_Last));
+		Total_Consumed := Total_Consumed + Consumed;
+	end loop;
+	-- 4.
+	if LZ4Ada."="(Ctx.Is_End_Of_Frame, LZ4Ada.No) then
+		raise Constraint_Error with "Input ended mid-frame.";
+	end if;
+end UnLZ4Ada_Simple;
 ~~~
 
 Here is how the sample program works:
@@ -193,30 +197,36 @@ Here is how the sample program works:
  1. `Stdin` and `Stdout` allow accessing the respective streams for binary
     input/output. `Buf_In` defines an input buffer with an arbitrary size.
     In this example, a 4 KiB buffer is allocated.
- 2. Initially, a single buffer of data is read from stdin.
-    This buffer contains enough of the LZ4 data to parse the header and
-    allocate a context.
- 3. After parsing the header, the expected buffer size is known
-    (`Req_Buffer_Size`) and a suitable buffer is allocated.
- 4. The remainder of the data can be parsed in a loop:
+ 2. The example makes use of the library API that allows initialization without
+    supplying any data. This comes at the cost of allocating the buffer large
+    enough to process the largest LZ4 blocks which means that two 8 MiB buffers
+    are needed: One inside the library (as input buffer) and one external
+    as output buffer.
+ 3. The data can now be processed in a loop:
      * If all buffered input data has been processed already
-       (`Total_Consumed > Last`) then new data is read from `Stdin`.
+       (`Total_Consumed > Last` and initially) then new data is read from
+       `Stdin`.
      * `Ctx.Update` is invoked with the current chunk of input data to process.
      * `Write` is called to output any data decompressed by the `Update` call.
- 5. After processing, condition `Ctx.Is_End_Of_Frame = No` is checked because:
+ 4. After processing, condition `Ctx.Is_End_Of_Frame = No` is checked because:
     If this is not the end of frame, processing has ended mid-frame and the
-    output is most likely to be incomplete.
+    output is most likely to be incomplete. An alternative exception that could
+    be raised here insted of `Constraint_Error` is `Data_Corruption` as supplied
+    by the library. The variant shown has the advantage of not needing to use
+    any of the custom library types/exceptions except for the `Decompressor`
+    itself.
 
 Using the installed Library
 ===========================
 
 Assuming the library is already installed on your system, you can compile
-and run the sample program as follows:
+and run the sample program from subdirectory `tool_unlz4ada` as follows:
 
 	gnatmake -o unlz4ada unlz4ada.adb \
 		-aO/usr/lib/x86_64-linux-gnu/ada/adalib/lz4 \
 		-aI/usr/share/ada/adainclude/lz4 \
 		-largs -llz4ada
+	ulimit -s 60000
 	./unlz4ada < ../test_vectors_lz4/z1.lz4 | xxd
 
 Output: `00000000: 00                                       .`
@@ -250,6 +260,7 @@ Here is what the directory structure may look like then:
 Compilation and invocation then become trivial:
 
 	gnatmake -o unlz4ada unlz4ada.adb
+	ulimit -s 60000
 	./unlz4ada < ../test_vectors_lz4/z1.lz4 | xxd
 
 Output: `00000000: 00                                       .`
@@ -271,7 +282,7 @@ look as follows:
    │    ├── build.xml
    │    └── liblz4ada.so
    │
-   ├── test_unlz4ada/
+   ├── tool_unlz4ada/
    │    ├── unlz4ada.adb
    │    └── build.xml
   ...
@@ -281,13 +292,14 @@ Compilation and invocation then have to account for the library not being
 installed as follows:
 
 	gnatmake -o unlz4ada unlz4ada.adb -aO../lib -aI../lib -largs -llz4ada
+	ulimit -s 60000
 	LD_LIBRARY_PATH=$PWD/../lib ./unlz4ada < ../test_vectors_lz4/z1.lz4 | xxd
 
 Decompression API
 =================
 
 This section describes the decompression API provided by this library. There is
-also an API to make use of the XXHash32 code directly, see `XXHash32 API`
+also an API to make use of the XXHash32 checksum directly, see `XXHash32 API`
 further down. Some of the data types are shared among both of the APIs and
 only described here.
 
@@ -299,34 +311,135 @@ subtype U32 is Interfaces.Unsigned_32;
 subtype U64 is Interfaces.Unsigned_64;
 type Octets is array (Integer range <>) of U8;
 type End_Of_Frame is (Yes, No, Maybe);
+type Flexible_Memory_Reservation is (SZ_64_KiB, SZ_256_KiB, SZ_1_MiB,
+				SZ_4_MiB, SZ_8_MiB, Use_First, Single_Frame);
+subtype Memory_Reservation is Flexible_Memory_Reservation range
+							SZ_64_KiB .. SZ_8_MiB;
+For_Modern: constant Memory_Reservation := SZ_4_MiB;
+For_All:    constant Memory_Reservation := SZ_8_MiB;
+type End_Of_Frame is (Yes, No, Maybe);
 type Decompressor(In_Last: Integer) is tagged limited private;
 ~~~
 
- * `U8`:           This type represents a single byte.
- * `U32`:          This type represents a 32 bit word.
- * `Octets`:       This type represents a byte string.
- * `End_Of_Frame`: This type represents the state of processing.
-   It is a tristate value `Yes/No/Maybe` with the following meaning:
-    * `Yes` indicates that the frame has ended.
-    * `No` indicates that a frame is being processed and the current state
-      cannot be the end.
-    * `Maybe` indicates a special case: When a legacy frame is processed, the
-      end of data may occur after any full block. `Maybe` indicates such an end
-      of block that could be the end of the stream already. An application using
-      the library should use external knowledge about the end of input data to
-      decide whether this `Maybe` is an actual end of stream or just a temporary
-      state that occurs before the next block begins. If an application intends
-      to parse only non-legacy frames, it could as well raise an exception upon
-      reaching this `Maybe` state.
+### `U8`, `U32`, `Octets`, `Decompressor`
+
+ * `U8`: This type represents a single byte.
+ * `U32`: This type represents a 32 bit word.
+ * `Octets`: This type represents a byte string.
+   As an alternative to the `Octets` type defined by this library, the standard
+   `Stream_Element_Array` type can be used. In this case it is assumed that the
+   stream elements are indeed bytes (this is not required by the standard!).
  * `Decompressor`: This type represents an opaque context of operation.
 
-As an alternative to the types defined by this library, the standard
-`Stream_Element_Array` and `Stream_Element_Offset` types can be used. In this
-case it is assumed that the stream elements are indeed bytes (this is not
-required by the standard!).
+### `Memory_Reservation`
 
-There is currently no standard alternative for the `End_Of_Frame` type since
-it has a peculiar tristate meaning (see above).
+A memory reservation is used to limit how much stack space the library allocates
+for processing data. On “large” machines and to be able to process all kinds
+of LZ4 frames the default setting of 8 MiB (`For_All` constant) may be a good
+choice.
+
+If you are hitting memory limit issues but want to keep things simple, the
+`For_Modern` constant corresponding to 4 MiB buffers already halves the amount
+of memory needed only by sacrificing compatibility with legacy frames.
+
+For cases where strict limits are needed, any of the `SZ_` enum values can be
+used as memory reservation. If input data is too large to be processed using the
+allocated buffers, exception `Too_Little_Memory` is raised to clearly indicate
+this to the API user.
+
+### `Flexible_Memory_Reservation`
+
+While a constant value memory limit like `SZ_64_KiB` may be a good choice for
+some (larger) embedded systems, there are also cases where the memory allocation
+should follow the size of the input data. For these cases, a
+`Flexible_Memory_Reservation` can be used in conjunction with API function
+`Init_With_Header`. The following flexible memory reservations are available:
+
+ * `Use_First`: Allocate memory according to the size of the first frame
+   processed.
+ * `Single_Frame`: Like `Use_First` but additionally raises `Data_Corruption`
+   when data from concatenated frames is provided. This is useful in case the
+   API user wants to perform their own multi-frame handling.
+
+As `Memory_Reservation` is a subtype of `Flexible_Memory_Reservation`, any
+constant `Memory_Reservation` can also be passed to `Init_With_Header`.
+
+### `End_Of_Frame`
+
+This type represents the state of processing. It is a tristate value
+`Yes/No/Maybe` with the following meaning:
+
+ * `Yes` indicates that the frame has ended.
+ * `No` indicates that a frame is being processed and the current state cannot
+   be the end yet.
+ * `Maybe` indicates a special case: When a legacy frame is processed, the end
+   of data may occur after any full block. `Maybe` indicates such an end of
+   block that could be the end of the stream already. An application using the
+   library should use external knowledge about the end of input data to decide
+   whether this `Maybe` is an actual end of stream or just a temporary state
+   that occurs before the next block begins. If an application intends to parse
+   only modern frames, it could as well raise an exception upon reaching this
+   `Maybe` state.
+
+## Exceptions
+
+The following UML-like diagram shows an overview about the exceptions provided
+by this library:
+
+~~~
+                   ┌─────────────────────────────────┐
+                   │ (cannot process the given data) │
+                   └──△────────────────────────────△─┘
+                      │                            │
+          ┌───────────┴─────┐                 ┌────┴────────────────────┐
+          │ Data_Corruption │                 │ (library usage related) │
+          └──△───────────△──┘                 └────△───────────────△────┘
+             │           │                         │               │
+┌────────────┴───┐ ┌─────┴─────────┐ ┌─────────────┴────────┐ ┌────┴──────────────┐
+│ Checksum_Error │ │ Not_Supported │ │ Too_Few_Header_Bytes │ │ Too_Little_Memory │
+└────────────────┘ └───────────────┘ └──────────────────────┘ └───────────────────┘
+~~~
+
+The labels in parentheses serve as additional information and do not correspond
+to exceptions in the library.
+
+### Data Corrution related Exceptions
+
+ * `Data_Corruption`:
+   This exception is raised whenever internal assumptions of the LZ4
+   frame or block format are violated. It indicates non-LZ4 or corrupted
+   input data Additionally, this exception is raised when ` Single_Frame`
+   operation was requsted, but data for a follow-up frame is detected by the
+   library.
+ * `Checksum_Error`:
+   This exception is raised whenever an LZ4 checksum does not match.
+   The library does not currently support bypassing the checksum verification.
+ * `Not_Supported`:
+   This exception is raised whenever values observed that the LZ4
+   specification reports as reserved. As such, the values could indicate
+   newer data formats/features being in use. As this need not be
+   corrupted data but could be a valid new extension of the format,
+   a dedicated `Not_Supported` exception is raised in this case.
+
+### Library Usage related Exceptions
+
+These exceptions occur because certain restrictions (e.g. `Memory_Reservation`)
+are passed to the API in a way that contradicts what the actual supplied data
+requires. If an application declares reservations in a way that they “should”
+be OK, then any of these exceptions can be treated like a `Data_Corruption` or
+`Not_Supported`.
+
+ * `Too_Few_Header_Bytes`:
+   This exception is only raised by function `Init_With_Header` and reports that
+   the provided header data input is too short to contain the entire LZ4 header.
+   Applications can use this to fall-back to the `Init` without header or be
+   changed to provide a larger chunk of initial data to `Init_With_Header`.
+ * `Too_Little_Memory`:
+   This exception is raised when an LZ4 frame header is processed and it
+   indicates a maximum block size that is larger than the buffer size provided
+   by the current `Decompressor` context. This means the data may be valid but
+   cannot be processed using the current contexts. API users encountering this
+   exception should consider using a larger memory reservation in `Init`.
 
 ## API Rationale
 
@@ -334,26 +447,13 @@ This section describes some of the thoughts behind the API design. They may help
 API users understand the overall idea behind the API better and are less focused
 on the API usage.
 
-### No Context Re-Use
-
-The `Decompressor` contexts provided by this API can be used to decompress
-one frame only. This is due to the fact that an internal buffer is allocated
-according to the largest block contained in the LZ4 frame.
-
-Since other frames may define another largest block size, a `Decompressor`
-cannot be re-used in the general case. It also does not seem sensible to provide
-a reset function that can only “sometimes” work i.e. when the new max block size
-is smaller or equal compared to the previous one.
-
-Hence, users must create a new `Decompressor` to decompress another LZ4 frame.
-
 ### `Min_Buffer_Size` Requirement
 
 The minimum output buffer size is at least a single block size. If the output
 buffer were possible to be chosen even smaller, internal computation would be
 much more complicated since it would be necessary to pause and resume output
 mid-buffer. Allowing the routines to assume that there is enough space for at
-least _one_ buffer, makes the handling less complicated without impacting
+least _one_ block, makes the handling less complicated without impacting
 performance.
 
 ### About `Buffer` and `Num_Consumed`
@@ -394,65 +494,30 @@ if LZ4Ada."="(Ctx.Is_End_Of_Frame, LZ4Ada.No) then
 end if;
 ~~~
 
-Alternatively, other exception types might be suitable, e.g. the
-library-supplied `Data_Corruption` could also be a sensible choice here.
+As an alternative to `Constraint_Error`, other exception types might be
+suitable, e.g. the library-supplied `Data_Corruption` is also a sensible choice
+here.
 
-### `No_Progress` Exception
+### Multi-Frame Handling
 
-During the development of the library, it was observed that under certain
-circumstances, a naively implemented “single-frame decompression” (like the
-single frame decompression proposed above) could run into an endless loop if it
-was presented with data that it had not been originally intended to decode. Such
-data included invalid data with arbitrary trailing bytes after the end of frame,
-e.g. file `tralingbytes.err` and cases of multiple, validly concatenated frames.
+The library supports a “simple” usage where it internally detects multiple
+concatenated frames and processes them in sequence. This is the behaviour of the
+commandline `unlz4` command and probably well-suited for a wide range of
+LZ4 decompression problems.
 
-The issue could be tracked down to the `Update` procedure which would (not) report
-such cases by not consuming any more input data (since the frame had ended
-already) and by not producing any more output data (also since the frame had
-ended already). Problem was: Naive library usage may not expect this case to
-occur.
+As LZ4 frames can contain additional information in “skipppable frames” it
+also makes sense to provide a manes for the application to detect the end of
+frames and probably process some special variants by itself. To enable this,
+the `Init_With_Header` API can be supplied a memory reservation `Single_Frame`
+to enable single-frame mode of operation. Then, only one LZ4 frame is processed
+using the context and data beyond that can be processed differently by the API
+user or a new context can be allocated for the next frame. This mode can also be
+used to limit the memory allocation to what is needed for the specific,
+currently processed frame.
 
-While it is possible to check this explicitly, it seems safer to avoid this trap
-at the API design level and produce a meaningful exception for such cases. Thus
-the `No_Progress` exception was created.
-
-If your application needs to be able to call `Update` repeatedly even if no
-data is processed this way -- say, e.g. you'd hardcode to call it four times
-in a row without any intermediate checks or something, then it is still possible
-to achieve the previous behaviour by creating your own auxiliary procedure
-that ignores `No_Progress` exceptions.
-
-In most cases, it is expected that a library user will not call the `Update`
-procedure more often than necessary, though. Hence it seems to be a sensible
-tradeoff to bother with the `No_Progress` exception only in exceptional cases
-and provide enhanced safety in all the naive and usual cases.
-
-## Exceptions
-
-Any of these exceptions can be thrown by the `Init` and `Update` procedures.
-
- * `Checksum_Error`:
-    This exception is raised whenever an LZ4 checksum does not match.
-    The library does not currently support bypassing the checksum
-    verification.
- * `Data_Corruption`:
-   This exception is raised whenever internal assumptions of the LZ4
-   frame or block format are violated. It indicates non-LZ4 or corrupted
-   input data.
- * `Not_Supported`:
-   This exception is raised whenever values observed that the LZ4
-   specification reports as reserved. As such, the values could indicate
-   newer data formats/features being in use. As this need not be
-   corrupted data but could be a valid new extension of the format,
-   a dedicated Not_Supported exception is raised in this case.
- * `No_Progress`:
-   This exception is raised whenever `Update` is called again after an end of
-   frame condition has already been reached and was possible to detect by the
-   library user already. If the library user's implementation ensures proper
-   termination even in cases where none of the supplied data is consumed
-   _and also_ no new output is generated then it may be safe to ignore this
-   exception. In this sense it can be seen as conceptually similar but not
-   exactly equal to the `End_Error` from the Ada Standard Library.
+As the use of this API is more complicated (compare the example unde
+ `tool_unlz4ada`), the more conveniently usable `Init` (without header) API is
+provided, too.
 
 ## Functions and Procedures
 
@@ -460,34 +525,56 @@ A detailed description of the API functions follows after the overview excerpt
 from `lz4ada.ads`.
 
 ~~~{.ada}
-function Init  (Input:           in Octets;
-		Num_Consumed:    out Integer;
-		Min_Buffer_Size: out Integer)
-		return Decompressor with Pre => Input'Length >= 7;
-function Init  (Input:           in Ada.Streams.Stream_Element_Array;
-		Num_Consumed:    out Ada.Streams.Stream_Element_Offset;
-		Min_Buffer_Size: out Ada.Streams.Stream_Element_Offset)
+function Init(Min_Buffer_Size:   out    Stream_Element_Offset;
+		Reservation:     in     Memory_Reservation := For_All)
+		return Decompressor;
+function Init(Min_Buffer_Size:   out    Integer;
+		Reservation:     in     Memory_Reservation := For_All)
+		return Decompressor;
+
+function Init_With_Header(Input: in     Octets;
+		Num_Consumed:    out    Integer;
+		Min_Buffer_Size: out    Integer;
+		Reservation:     in     Flexible_Memory_Reservation
+							:= Single_Frame)
 		return Decompressor with Pre => Input'Length >= 7;
 
-procedure Update(Ctx:          in out Decompressor;
-		 Input:        in     Octets;
-		 Num_Consumed: out    Integer;
-		 Buffer:       in out Octets;
-		 Output_First: out    Integer;
-		 Output_Last:  out    Integer)
-		 with Pre => (Buffer'First = 0);
-procedure Update(Ctx:          in out Decompressor;
-		 Input:        in Ada.Streams.Stream_Element_Array;
-		 Num_Consumed: out Ada.Streams.Stream_Element_Offset;
-		 Buffer:       in out Ada.Streams.Stream_Element_Array;
-		 Output_First: out Ada.Streams.Stream_Element_Offset;
-		 Output_Last:  out Ada.Streams.Stream_Element_Offset;
-		 Frame_Ended:  out Boolean);
+procedure Update(Ctx:            in out Decompressor;
+		Input:           in     Stream_Element_Array;
+		Num_Consumed:    out    Stream_Element_Offset;
+		Buffer:          in out Stream_Element_Array;
+		Output_First:    out    Stream_Element_Offset;
+		Output_Last:     out    Stream_Element_Offset);
+procedure Update(Ctx:            in out Decompressor;
+		Input:           in     Octets;
+		Num_Consumed:    out    Integer;
+		Buffer:          in out Octets;
+		Output_First:    out    Integer;
+		Output_Last:     out    Integer)
+		with Pre => (Buffer'First = 0);
 
 function Is_End_Of_Frame(Ctx: in Decompressor) return End_Of_Frame;
 ~~~
 
-### `function Init(Input: in; Num_Consumed: out; Min_Buffer_Size: out) return Decompressor`
+### `function Init(Min_Buffer_Size: out; Reservation: in) return Decompressor`
+
+This function initializes a new Decompressor without having to provide initial
+header.
+
+This Decompressor accepts multiple concatenated frames in sequence such as long
+as they fit the `Memory_Reservation`. For the meaning of the different memory
+reservations, check the documentation for the `Memory_Reservation` data type
+above.
+
+This is a convenient API for cases where either memory consumption does not
+matter much (e. g. on Desktop OSes) or where the upper bound for the maximum
+block size that is going to be used is known in advance.
+
+This function can be called with either `Integer` as number type or
+`Stream_Element_Offset` to directly allow passing the `Min_Buffer_Size` to
+an array declaration.
+
+### `function Init_With_Header(Input: in; Num_Consumed: out; Min_Buffer_Size: out; Reservation: in)`
 
 This function creates an LZ4 decompression context. It requires the begin of
 the frame to be supplied as `Input` and returns the decompression context.
@@ -495,12 +582,16 @@ the frame to be supplied as `Input` and returns the decompression context.
 Additionally, it outputs as `Num_Consumed` how many of the supplied bytes it
 processed and as `Min_Buffer_Size` the suggested buffer size to be used for
 `Update` calls. The bytes consumed by `Init` must not be sent to subsequent
-`Update` calls, i.e. if there is still some data left in the input buffer, then
+`Update` calls, i. e. if there is still some data left in the input buffer, then
 the first `Update` call is expected to take `Input(Num_Consumed .. Input'Last)`
 rather than `Input` directly.
 
-This function can be called with either `Octets` as data type and `Integer` as
-number type or `Stream_Element_Array` and `Stream_Element_Offset` respectively.
+This function can only be called using `Octets` as data type and `Integer` as
+number type because it is a low-level API that is expected to be only needed
+in rare cases.
+
+If too little input data is supplied to process the entire header,
+exception `Too_Few_Header_Bytes` is raised.
 
 ### `procedure Update(Ctx: in out; Input: in, Num_Consumed: out, Buffer: in out; Output_First: out; Output_Last: out)`
 
@@ -511,7 +602,7 @@ each time data from the same LZ4 stream is to be decompressed.
 
 `Input` must always point to previously unprocessed data. Check the value of
 `Num_Consumed` after each invocation to find out how many of the input bytes
-must be skipped (e.g. by using slice notation) when invoking `Update` again on
+must be skipped (e. g. by using slice notation) when invoking `Update` again on
 the same `Input` buffer.
 
 `Buffer` must not be modified between invocations of `Update` since it is used
@@ -539,13 +630,13 @@ Applications are expected to check this value, but depending on implementation
 and intended formats to support, this check can happen at different times:
 
  * One variant is to check the value at the end of processing only
-   (see example code `unlz4ada_singleframe.adb`). If end of frame is not checked
-   explicitly, it may be reported by `No_Progress` exceptions in case an
+   (see example code `unlz4ada_simple.adb`). If end of frame is not checked
+   explicitly, it may be reported by a `Data_Corruption` exception in case an
    implementation which only expects to process a single LZ4 frame is passed
    data consisting of multiple frames.
  * Alternatively, the value can be checked for each invocation of `Update`
    for cases where the application intends to decode multiple, consecutive
-   LZ4 frames. An example of this variant can be found in file
+   LZ4 frames by itself. An example of this variant can be found in file
    `test_unlz4ada/unlz4ada.adb`.
  * Some of the API uses may even work without calling the function at all. This
    is a viable option if the decompressed data's validity is checked externally
@@ -564,11 +655,11 @@ the `Stream_Element_Array` types is provided here.
 ~~~{.ada}
 package XXHash32 is
 	type Hasher is tagged limited private;
-	function  Init return Hasher;
-	function  Init(Seed: in U32) return Hasher;
+	function  Hash(Input: in Octets) return U32;
+	function  Init(Seed: in U32 := 0) return Hasher;
+	procedure Reset(Ctx: in out Hasher; Seed: in U32 := 0);
 	procedure Update(Ctx: in out Hasher; Input: in Octets);
 	function  Final(Ctx: in Hasher) return U32;
-	function  Hash(Input: in Octets) return U32;
 private
 	-- ...
 end XXHash32;
@@ -596,14 +687,15 @@ In case the input data is large, it might be better to design using the
 long data whereas `Hash` expects all of the input to be present in memory
 at once.
 
-### `function Init return Hasher;`
-
-This function creates and returns a `Hasher` instance using `Seed => 0`.
-
 ### `function Init(Seed: in) return Hasher;`
 
 This function creates and returns a `Hasher` instance using the supplied seed
-value.
+value (default: 0).
+
+### `procedure Reset(Ctx: in out; Seed: in);`
+
+Resets a `Hasher` to the state just like an `Init`. This allows re-creating a
+hasher despite it being a limited record.
 
 ### `procedure Update(Ctx: in out; Input: in);`
 
