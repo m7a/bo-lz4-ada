@@ -1,6 +1,4 @@
--- LZ4 Extractor Library in Ada 1.0.0,
--- (c) 2022, 2023 Ma_Sys.ma <info@masysma.net>.
---
+-- Ada LZ4 Extractor Library 1.0.0 (c) 2022, 2023 Ma_Sys.ma <info@masysma.net>
 -- Available under Expat License, see lz4ada.ads for full license and copyright.
 
 with Ada.Assertions;
