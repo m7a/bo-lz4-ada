@@ -11,18 +11,18 @@
  This package provides an Ada implementation of an LZ4 Decompressor
  as a shared library. This implementation only supports decompression!
  .
- * LZ4 Frame Format is supported according to specification v.1.6.3.
- * Legacy Frame Format is supported.
- * Skippable Frames are supported.
- * Provided checksums are verified.
- * Provided length information is verified.
- * Concatenated frames can be decompressed.
- * Big Endian architectures are UNSUPPORTED.
- * Dictionaries are UNSUPPORTED.
+ LZ4 Frame Format is supported according to specification v.1.6.3.
+ Legacy Frame Format is supported.
+ Skippable Frames are supported.
+ Provided checksums are verified.
+ Provided length information is verified.
+ Concatenated frames can be decompressed.
+ Big Endian architectures are UNSUPPORTED.
+ Dictionaries are UNSUPPORTED.
  .
  Performance is slower compared to reference and C implementations:
  The unlz4 C program is at least three times as fast. The Ada
- implementation's performance may still sufficie for a range of
+ implementation's performance may still suffice for a range of
  applications since it exceeds the 1000 MiB/s limit on modern systems.
 </property>
 
