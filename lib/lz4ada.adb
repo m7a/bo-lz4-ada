@@ -124,6 +124,28 @@ package body LZ4Ada is
 			Hash_All_Data => LZ4Ada.XXHash32.Init, others => <>);
 	end Init_With_Header;
 
+	function Init_For_Block(Min_Buffer_Size: out Integer;
+				Compressed_Length: in Integer;
+				Reservation: in Memory_Reservation := For_All)
+				return Decompressor is
+		Block_Max_Size: constant Integer := Get_Block_Size(Reservation);
+	begin
+		Min_Buffer_Size := Block_Max_Size + History_Size + 8;
+		return (
+			M => (
+				Is_Format          => Block,
+				Is_Compressed      => True,
+				Header_Parsing     => Header_Complete,
+				Memory_Reservation => Reservation,
+				others             => <>
+			),
+			In_Last       => Block_Max_Size - 1,
+			Input_Length  => Compressed_Length,
+			Hash_All_Data => LZ4Ada.XXHash32.Init,
+			others        => <>
+		);
+	end Init_For_Block;
+
 	------------------------------------------------------------------------
 	------------------------------------------------------------------------
 	------------------------------------------------------------  HEADER  --
@@ -614,7 +636,8 @@ package body LZ4Ada is
 		Want:   constant Integer := Ctx.Input_Length +
 						Ctx.M.Block_Checksum_Length -
 						Ctx.M.Input_Buffer_Filled +
-						Block_Size_Bytes;
+						(if Ctx.M.Is_Format = Block then
+						0 else Block_Size_Bytes);
 		Fill:   constant Integer := Ctx.M.Input_Buffer_Filled;
 		Offset: constant Integer := Input'First + Num_Consumed;
 	begin
@@ -818,7 +841,7 @@ package body LZ4Ada is
 
 	-- While this procedure looks a little convoluted, it is significantly
 	-- faster compared to a naive solution where each byte is evaluated
-	-- again as to whether a “wrap around” nees to be considered or not
+	-- again as to whether a “wrap around” needs to be considered or not
 	-- (even if this choice is hidden in a modulus operation!)
 	procedure Output_With_History(Ctx: in out Decompressor;
 				Offset: in Integer; Match_Length: in Integer;
@@ -882,8 +905,14 @@ package body LZ4Ada is
 	end Output_With_History;
 
 	function Is_End_Of_Frame(Ctx: in Decompressor) return End_Of_Frame is
-			(if Ctx.M.Is_Format = Legacy and Ctx.Is_At_End_Mark
-			then Maybe else Ctx.M.Status_EOF);
+	begin
+		case Ctx.M.Is_Format is
+		when Legacy => return (if Ctx.Is_At_End_Mark then Maybe else
+							Ctx.M.Status_EOF);
+		when Block  => return (if Ctx.Is_At_End_Mark then Yes else No);
+		when others => return Ctx.M.Status_EOF;
+		end case;
+	end Is_End_Of_Frame;
 
 	------------------------------------------------------------------------
 	------------------------------------------------------------------------

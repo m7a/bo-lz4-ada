@@ -242,6 +242,11 @@ package LZ4Ada is
 								:= Single_Frame)
 			return Decompressor with Pre => Input'Length >= 7;
 
+	function Init_For_Block(Min_Buffer_Size:  out Integer;
+				Compressed_Length: in Integer;
+				Reservation:       in Memory_Reservation
+						:= For_All) return Decompressor;
+
 	-- Decompress data using an “Octets”-based API
 	--
 	-- @param Ctx
@@ -337,7 +342,7 @@ private
 
 	subtype Magic_Skippable is U32 range 16#184d2a50# .. 16#184d2a5f#;
 
-	type Format is (TBD, Legacy, Modern, Skippable);
+	type Format is (TBD, Legacy, Modern, Block, Skippable);
 	type Header_Parsing_State is (Need_Magic, Need_Modern, Need_Flags,
 					Need_Skippable_Length, Header_Complete);
 

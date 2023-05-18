@@ -43,7 +43,7 @@ Compiling
 
 The following dependencies are required for building:
 
- * Ada compiler (`gcc`, `gnatmake`)
+ * Ada compiler (`gnat-10`, `gcc`)
  * Ant build tool (`ant`)
 
 ## Compile
@@ -51,6 +51,8 @@ The following dependencies are required for building:
 	ant
 
 ## Run Tests
+
+Running the test requires the following standard tools: `bc`, `time`
 
 	ant
 	./test_run.sh

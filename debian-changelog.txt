@@ -1,3 +1,9 @@
+liblz4-ada-dev (1.0.1) stable; urgency=medium
+
+  * Build a version wich supports block decompression (experimental)
+
+ -- Ma_Sys.ma Linux-Fan <info@masysma.net>  Thu, 18 May 2023 14:31:13 +0200
+
 liblz4-ada-dev (1.0.0) stable; urgency=medium
 
   * Package created with MDPC 2
