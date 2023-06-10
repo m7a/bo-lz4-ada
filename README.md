@@ -517,8 +517,8 @@ user or a new context can be allocated for the next frame. This mode can also be
 used to limit the memory allocation to what is needed for the specific,
 currently processed frame.
 
-As the use of this API is more complicated (compare the example unde
- `tool_unlz4ada`), the more conveniently usable `Init` (without header) API is
+As the use of this API is more complicated (compare the example under
+`tool_unlz4ada`), the more conveniently usable `Init` (without header) API is
 provided, too.
 
 ## Functions and Procedures
