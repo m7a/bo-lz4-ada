@@ -528,32 +528,32 @@ from `lz4ada.ads`.
 
 ~~~{.ada}
 function Init(Min_Buffer_Size:   out    Stream_Element_Offset;
-		Reservation:     in     Memory_Reservation := For_All)
-		return Decompressor;
+                Reservation:     in     Memory_Reservation := For_All)
+                return Decompressor;
 function Init(Min_Buffer_Size:   out    Integer;
-		Reservation:     in     Memory_Reservation := For_All)
-		return Decompressor;
+                Reservation:     in     Memory_Reservation := For_All)
+                return Decompressor;
 
 function Init_With_Header(Input: in     Octets;
-		Num_Consumed:    out    Integer;
-		Min_Buffer_Size: out    Integer;
-		Reservation:     in     Flexible_Memory_Reservation
-							:= Single_Frame)
-		return Decompressor with Pre => Input'Length >= 7;
+                Num_Consumed:    out    Integer;
+                Min_Buffer_Size: out    Integer;
+                Reservation:     in     Flexible_Memory_Reservation
+                                                        := Single_Frame)
+                return Decompressor with Pre => Input'Length >= 7;
 
 procedure Update(Ctx:            in out Decompressor;
-		Input:           in     Stream_Element_Array;
-		Num_Consumed:    out    Stream_Element_Offset;
-		Buffer:          in out Stream_Element_Array;
-		Output_First:    out    Stream_Element_Offset;
-		Output_Last:     out    Stream_Element_Offset);
+                Input:           in     Stream_Element_Array;
+                Num_Consumed:    out    Stream_Element_Offset;
+                Buffer:          in out Stream_Element_Array;
+                Output_First:    out    Stream_Element_Offset;
+                Output_Last:     out    Stream_Element_Offset);
 procedure Update(Ctx:            in out Decompressor;
-		Input:           in     Octets;
-		Num_Consumed:    out    Integer;
-		Buffer:          in out Octets;
-		Output_First:    out    Integer;
-		Output_Last:     out    Integer)
-		with Pre => (Buffer'First = 0);
+                Input:           in     Octets;
+                Num_Consumed:    out    Integer;
+                Buffer:          in out Octets;
+                Output_First:    out    Integer;
+                Output_Last:     out    Integer)
+                with Pre => (Buffer'First = 0);
 
 function Is_End_Of_Frame(Ctx: in Decompressor) return End_Of_Frame;
 ~~~
