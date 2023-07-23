@@ -242,6 +242,16 @@ package LZ4Ada is
 								:= Single_Frame)
 			return Decompressor with Pre => Input'Length >= 7;
 
+	-- Initializes a new Decompressor capable of decompressing a single LZ4
+	-- block.
+	--
+	-- @param Min_Buffer_Size
+	-- 	Returns the minimum length of output buffers for decoding
+	-- 	LZ4 frames according to the reservation.
+	-- @param Compressed_Length
+	-- 	Specify the compressed size of the block that follows
+	-- @return
+	-- 	Decompressor context
 	function Init_For_Block(Min_Buffer_Size:  out Integer;
 				Compressed_Length: in Integer;
 				Reservation:       in Memory_Reservation

@@ -213,6 +213,40 @@ procedure LZ4Test is
 		end if;
 	end Test_Good_Decompress_Individual_Bytes;
 
+	procedure Test_Good_Hello_Block is
+		CMP: constant String := "Hello, world.";
+		TC: constant Octets := (
+			16#d0#, 16#48#, 16#65#, 16#6c#, 16#6c#, 16#6f#, 16#2c#,
+			16#20#, 16#77#, 16#6f#, 16#72#, 16#6c#, 16#64#, 16#2e#
+		);
+		Min_Buffer_Size: Integer;
+		Ctx: Decompressor := Init_For_Block(Min_Buffer_Size, TC'Length);
+		Buf: Octets(0 .. Min_Buffer_Size - 1);
+		Consumed, RF, RL: Integer;
+		B_Str: String(1 .. CMP'Length);
+		for B_Str'Address use Buf'Address;
+	begin
+		Ctx.Update(TC, Consumed, Buf, RF, RL);
+		if Consumed < TC'Length then
+			Put_Line("[FAIL] Test_Good_Hello_Block - " &
+				"Test does not support not consuming all the " &
+				"data at once for now. Check changes or fix " &
+				"in source code.");
+			return;
+		end if;
+		if Ctx.Is_End_Of_Frame /= Yes then
+			Put_Line("[FAIL] Test_Good_Hello_Block - " &
+				"EOF not reached: " &
+				End_Of_Frame'Image(Ctx.Is_End_Of_Frame));
+		elsif B_Str = CMP then
+			Put_Line("[ OK ] Test_Good_Hello_Block");
+		else
+			Put_Line("[FAIL] Test_Good_Hello_Block - " &
+				"Mismatching output produced. Expected " &
+				"<" & CMP & ">, got <" & B_Str & ">");
+		end if;
+	end Test_Good_Hello_Block;
+
 	procedure Test_Good_Cases is
 		procedure Test_Good_Case_4K is new Test_Good_Case_Inner(4096);
 		procedure Test_Good_Case_1B is new Test_Good_Case_Inner(1);
@@ -236,6 +270,7 @@ procedure LZ4Test is
 				Test_Good_Case_1B'Access);
 		Test_Good_Hash_Individual_Bytes;
 		Test_Good_Decompress_Individual_Bytes;
+		Test_Good_Hello_Block;
 	end Test_Good_Cases;
 
 	--

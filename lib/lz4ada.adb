@@ -233,7 +233,6 @@ package body LZ4Ada is
 		M.Block_Checksum_Length   := 0;
 		M.Content_Checksum_Length := 0;
 		M.Has_Content_Size        := False;
-		M.Size_Remaining          := 0;
 		M.Is_Compressed           := True;
 		Check_Reservation(M.Memory_Reservation, Effective_Reservation);
 		M.Memory_Reservation := Effective_Reservation;
@@ -909,7 +908,8 @@ package body LZ4Ada is
 		case Ctx.M.Is_Format is
 		when Legacy => return (if Ctx.Is_At_End_Mark then Maybe else
 							Ctx.M.Status_EOF);
-		when Block  => return (if Ctx.Is_At_End_Mark then Yes else No);
+		when Block  => return (if Ctx.Input_Length = -1
+							then Yes else No);
 		when others => return Ctx.M.Status_EOF;
 		end case;
 	end Is_End_Of_Frame;

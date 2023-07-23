@@ -20,6 +20,7 @@ This repository provides an Ada implementation of an LZ4 Decompressor
 This implementation only supports decompression!
 
  * LZ4 Frame Format is supported according to specification v.1.6.3 (2022/09/12)
+ * LZ4 Block Format is supported according to specification (2022/07/31)
  * Legacy Frame Format is supported.
  * Skippable Frames are supported.
  * Provided checksums are verified.
@@ -541,6 +542,11 @@ function Init_With_Header(Input: in     Octets;
                                                         := Single_Frame)
                 return Decompressor with Pre => Input'Length >= 7;
 
+function Init_For_Block(Min_Buffer_Size:   out Integer;
+			Compressed_Length: in  Integer;
+			Reservation:       in  Memory_Reservation := For_All)
+		return Decompressor;
+
 procedure Update(Ctx:            in out Decompressor;
                 Input:           in     Stream_Element_Array;
                 Num_Consumed:    out    Stream_Element_Offset;
@@ -595,6 +601,16 @@ in rare cases.
 If too little input data is supplied to process the entire header,
 exception `Too_Few_Header_Bytes` is raised.
 
+### `function Init_For_Block(Min_Buffer_Size: out; Compressed_Length: in; Reservation: in)`
+
+This function creates an LZ4 decompression context intended to decompress just
+a single block of compressed data of compressed length `Compressed_Length`. This
+can be used to decompress the raw LZ4 block format.
+
+It is advisable to prefer the frame format over the block format since it allows
+storing useful metadata and using a single decopressor to decompress data of
+arbitrary length.
+
 ### `procedure Update(Ctx: in out; Input: in, Num_Consumed: out, Buffer: in out; Output_First: out; Output_Last: out)`
 
 This procedure can be called to decompress data.
@@ -622,6 +638,10 @@ If no output was generated, then `Output_Last` is smaller than `Output_First`.
 The procedure exists in two variants: One with `Octets` and `Integer` and one
 with `Stream_Element_Array` and `Stream_Element_Offset` types for ease of
 integration with the Standard Stream APIs.
+
+When used in the LZ4 `Block` mode and given the entire block input data, this
+procedure is guaranteed to produce the entire output for that block in a single
+run.
 
 ### `function Is_End_Of_Frame(Ctx: in) return End_Of_Frame;`
 
